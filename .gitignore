@@ -1,0 +1,24 @@
+# Logs gerados em runtime
+*.log
+
+# Arquivos de diagnóstico gerados pelo scanner
+symbols_flat.csv
+symbols_map.json
+
+# Pasta de memória interna do agente
+memory/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
