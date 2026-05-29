@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
 Forex Scanner Multi-Par — Triple Confirmation | MetaTrader5
-Monitora todos os pares forex disponíveis e prioriza entradas via scoring 0–4.
+
+Padrões de arquitetura:
+  - State Pattern        : EstadoAguardandoSinal / EstadoGerenciandoPosicao
+  - Chain of Responsibility: pipeline de filtros encadeados por símbolo
 """
+
+from __future__ import annotations
 
 import time
 import sys
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,16 +24,13 @@ import MetaTrader5 as mt5
 # ============================================================
 # CONFIGURAÇÕES
 # ============================================================
-
-# Filtro de spread (em pips)
 SPREAD_MAX_MAJORS        = 2.5
 SPREAD_MAX_MINORS        = 4.0
-SPREAD_MAX_PCT_OF_SL     = 0.20   # spread não pode exceder 20% do SL
+SPREAD_MAX_PCT_OF_SL     = 0.20
 
-# Indicadores M5
 EMA_FAST                 = 9
 EMA_SLOW                 = 21
-EMA_CROSSOVER_PIPS_THR   = 3.0   # distância < N pips para sinal de pré-crossover
+EMA_CROSSOVER_PIPS_THR   = 3.0
 RSI_PERIOD               = 7
 RSI_BUY_MIN              = 50
 RSI_BUY_MAX              = 70
@@ -34,29 +39,30 @@ RSI_SELL_MAX             = 50
 MACD_FAST                = 12
 MACD_SLOW                = 26
 MACD_SIGNAL              = 9
-
-# Filtro de tendência H1
 EMA_TREND_H1             = 50
 
-# Timeframes
 TF_M5 = mt5.TIMEFRAME_M5
 TF_H1 = mt5.TIMEFRAME_H1
 
-# Gestão de risco
 SL_PIPS                  = 12
-TP_RATIO                 = 2.0    # RR 1:2 → TP = 24 pips
-RISK_PCT                 = 0.01   # 1% do capital por trade
+TP_RATIO                 = 2.0
+RISK_PCT                 = 0.01
 
-# Controle de posições
 MAX_TOTAL_POSITIONS      = 3
 MAX_POSITIONS_PER_SYMBOL = 1
 
-# Operacional
 LOOP_SECONDS             = 15
 MAGIC                    = 654321
 LOG_FILE                 = "forex_scanner.log"
 BARS_M5                  = 300
 BARS_H1                  = 150
+
+# Sessões de mercado (horário UTC — imune a DST do servidor do broker)
+SESSION_LONDON_START     = 7    # abertura Londres
+SESSION_LONDON_END       = 17   # fechamento Londres
+SESSION_NY_START         = 13   # abertura Nova York
+SESSION_NY_END           = 22   # fechamento Nova York
+SESSION_ASIAN_END        = 9    # fechamento Ásia (abre às 22h do dia anterior)
 
 # ============================================================
 # LOGGING
@@ -84,7 +90,23 @@ log = setup_logging()
 
 
 # ============================================================
-# INDICADORES (cálculo manual)
+# MODELO DE DADOS
+# ============================================================
+@dataclass
+class CandidatoInfo:
+    """Representa um símbolo forex em avaliação, enriquecido a cada filtro."""
+    symbol:      str
+    category:    str
+    pip_size:    float
+    pip_value:   float
+    spread_pips: float                = 0.0
+    score:       int                  = 0
+    direction:   str                  = "NEUTRAL"
+    criterios:   Dict[str, str]       = field(default_factory=dict)
+
+
+# ============================================================
+# INDICADORES (cálculo manual com numpy — sem TA-Lib)
 # ============================================================
 def calc_ema(prices: np.ndarray, period: int) -> np.ndarray:
     """EMA pelo método multiplicador (k = 2 / (period+1))."""
@@ -137,7 +159,6 @@ def calc_macd(
 # FUNÇÕES MT5
 # ============================================================
 def connect() -> bool:
-    """Inicializa MT5 e loga informações da conta."""
     if not mt5.initialize():
         log.error("Falha ao inicializar MT5: %s", mt5.last_error())
         return False
@@ -154,7 +175,6 @@ def connect() -> bool:
 
 
 def get_bars(symbol: str, timeframe: int, count: int) -> Optional[pd.DataFrame]:
-    """Busca `count` candles e retorna DataFrame."""
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
     if rates is None or len(rates) == 0:
         log.debug("Sem dados: %s tf=%d", symbol, timeframe)
@@ -165,28 +185,17 @@ def get_bars(symbol: str, timeframe: int, count: int) -> Optional[pd.DataFrame]:
 
 
 def get_pip_info(symbol: str) -> Tuple[float, float]:
-    """
-    Retorna (pip_size, pip_value_por_lote).
-    pip_value = (pip_size / tick_size) * tick_value
-    """
     info = mt5.symbol_info(symbol)
     if info is None:
         raise RuntimeError(f"Symbol info não encontrado: {symbol}")
     pip_size   = info.point * 10
     tick_size  = info.trade_tick_size
     tick_value = info.trade_tick_value
-    if tick_size > 0:
-        pip_value = (pip_size / tick_size) * tick_value
-    else:
-        pip_value = info.trade_contract_size * pip_size
+    pip_value  = (pip_size / tick_size) * tick_value if tick_size > 0 else info.trade_contract_size * pip_size
     return pip_size, pip_value
 
 
 def calc_lot(capital: float, pip_value: float, symbol: str) -> float:
-    """
-    Calcula lote: (capital × RISK_PCT) / (SL_PIPS × pip_value).
-    Respeita volume_min, volume_max e volume_step do símbolo.
-    """
     if pip_value <= 0:
         return 0.01
     raw_lot = (capital * RISK_PCT) / (SL_PIPS * pip_value)
@@ -199,15 +208,9 @@ def calc_lot(capital: float, pip_value: float, symbol: str) -> float:
 
 
 def place_order(
-    symbol: str,
-    order_type: int,
-    lot: float,
-    price: float,
-    sl: float,
-    tp: float,
-    comment: str = "",
+    symbol: str, order_type: int, lot: float,
+    price: float, sl: float, tp: float, comment: str = "",
 ) -> bool:
-    """Envia ordem a mercado com SL/TP usando ORDER_FILLING_IOC, deviation=10."""
     request = {
         "action":       mt5.TRADE_ACTION_DEAL,
         "symbol":       symbol,
@@ -231,40 +234,27 @@ def place_order(
         return False
     log.info(
         "ENTRADA | %s %s | lote=%.2f | price=%.5f | sl=%.5f | tp=%.5f | ticket=%d",
-        symbol,
-        "BUY" if order_type == mt5.ORDER_TYPE_BUY else "SELL",
+        symbol, "BUY" if order_type == mt5.ORDER_TYPE_BUY else "SELL",
         lot, price, sl, tp, result.order,
     )
     return True
 
 
-# ============================================================
-# DESCOBERTA DE SÍMBOLOS FOREX
-# ============================================================
-def discover_forex_symbols() -> List[Dict[str, Any]]:
-    """
-    Retorna lista de dicts {symbol, category, pip_size, pip_value} para
-    todos os pares forex (Majors, Minors, Exotics) disponíveis na corretora.
-    Filtra: somente path que contém "forex", trade_mode == FULL.
-    Exclui: Crypto, Metals, Indices, Commodities, CFD.
-    """
+def discover_forex_symbols() -> List[CandidatoInfo]:
+    """Descobre todos os pares forex disponíveis e retorna como CandidatoInfo."""
     all_symbols = mt5.symbols_get()
     if not all_symbols:
         log.warning("Nenhum símbolo retornado pelo MT5.")
         return []
 
-    log.debug("Total de símbolos no MT5: %d", len(all_symbols))
-
     EXCLUDED = {"crypto", "metals", "indices", "commodities", "cfd"}
-    result   = []
+    result: List[CandidatoInfo] = []
     skipped_path = skipped_excluded = skipped_mode = 0
 
     for sym in all_symbols:
-        # Normaliza separadores e remove barras iniciais/finais
         path       = sym.path.replace("\\", "/").strip("/")
         path_lower = path.lower()
 
-        # Aceita qualquer path que contenha "forex" (ex: "Forex/Majors", "Forex", "/Forex/Minors")
         if "forex" not in path_lower:
             skipped_path += 1
             continue
@@ -275,17 +265,13 @@ def discover_forex_symbols() -> List[Dict[str, Any]]:
             skipped_mode += 1
             continue
 
-        # Subcategoria pelo path; fallback → Minors
         if "major" in path_lower:
             category = "Majors"
-        elif "minor" in path_lower:
-            category = "Minors"
         elif "exotic" in path_lower:
             category = "Exotics"
         else:
             category = "Minors"
 
-        # Garantir visibilidade no Market Watch para obter ticks
         mt5.symbol_select(sym.name, True)
 
         try:
@@ -296,378 +282,473 @@ def discover_forex_symbols() -> List[Dict[str, Any]]:
         if pip_size <= 0 or pip_value <= 0:
             continue
 
-        result.append({
-            "symbol":    sym.name,
-            "category":  category,
-            "pip_size":  pip_size,
-            "pip_value": pip_value,
-        })
+        result.append(CandidatoInfo(
+            symbol=sym.name,
+            category=category,
+            pip_size=pip_size,
+            pip_value=pip_value,
+        ))
 
     log.debug(
-        "Descartados: sem 'forex' no path=%d | excluídos=%d | trade_mode≠FULL=%d",
+        "Descartados: path=%d | excluídos=%d | trade_mode≠FULL=%d",
         skipped_path, skipped_excluded, skipped_mode,
     )
 
-    # Diagnóstico visível no terminal quando nenhum par é encontrado
     if not result:
         unique_paths = sorted({s.path for s in all_symbols})
         log.warning(
-            "Nenhum símbolo forex encontrado após filtros! "
-            "Paths disponíveis na corretora (%d únicos): %s",
-            len(unique_paths),
-            unique_paths[:20],
+            "Nenhum símbolo forex após filtros! Paths disponíveis (%d): %s",
+            len(unique_paths), unique_paths[:20],
         )
 
     log.debug("Símbolos forex descobertos: %d", len(result))
     return result
 
 
-# ============================================================
-# FILTRO DE SPREAD
-# ============================================================
-def filter_by_spread(symbols: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Descarta símbolos cujo spread atual excede o limite da categoria ou
-    20% do SL em pips. Exotics são sempre descartados.
-    Retorna lista filtrada com spread_pips adicionado a cada entry.
-    """
-    result = []
-
-    for s in symbols:
-        sym_name = s["symbol"]
-        category = s["category"]
-        pip_size = s["pip_size"]
-
-        if category == "Exotics":
-            log.debug("SPREAD SKIP (Exotic): %s", sym_name)
-            continue
-
-        tick = mt5.symbol_info_tick(sym_name)
-        if tick is None or tick.ask == 0 or tick.bid == 0:
-            log.debug("SPREAD SKIP (sem tick): %s", sym_name)
-            continue
-
-        spread_pips = (tick.ask - tick.bid) / pip_size
-
-        max_spread = SPREAD_MAX_MAJORS if category == "Majors" else SPREAD_MAX_MINORS
-        if spread_pips > max_spread:
-            log.debug(
-                "SPREAD SKIP (%s): %s spread=%.2fp > %.2fp",
-                category, sym_name, spread_pips, max_spread,
-            )
-            continue
-
-        if (spread_pips / SL_PIPS) > SPREAD_MAX_PCT_OF_SL:
-            log.debug(
-                "SPREAD SKIP (rel.SL): %s spread/SL=%.1f%%",
-                sym_name, spread_pips / SL_PIPS * 100,
-            )
-            continue
-
-        entry = dict(s)
-        entry["spread_pips"] = round(spread_pips, 2)
-        result.append(entry)
-
-    return result
-
-
-# ============================================================
-# CÁLCULO DE SCORE
-# ============================================================
-def calc_score(sym_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Avalia os 4 critérios Triple Confirmation no candle fechado (índice -2).
-
-    Critério 1 — EMA crossover ou proximidade (max 1 pt):
-      +1 se EMA9 cruzou EMA21 no candle atual
-      +1 se distância está diminuindo nos últimos 3 candles E dist < EMA_CROSSOVER_PIPS_THR
-
-    Critério 2 — RSI na faixa: BUY [50-70] | SELL [30-50]
-    Critério 3 — MACD alinhado: BUY = MACD > Signal | SELL = MACD < Signal
-    Critério 4 — H1 filter: BUY = preço > EMA50 H1 | SELL = preço < EMA50 H1
-
-    Direção: maioria dos critérios não-neutros. Empate → NEUTRAL.
-    Score: quantidade de critérios alinhados com a direção vencedora.
-    """
-    symbol   = sym_info["symbol"]
-    pip_size = sym_info["pip_size"]
-
-    df_m5 = get_bars(symbol, TF_M5, BARS_M5)
-    df_h1 = get_bars(symbol, TF_H1, BARS_H1)
-    if df_m5 is None or df_h1 is None:
-        return None
-
-    close_m5 = df_m5["close"].values
-    close_h1 = df_h1["close"].values
-
-    ema_fast              = calc_ema(close_m5, EMA_FAST)
-    ema_slow              = calc_ema(close_m5, EMA_SLOW)
-    rsi                   = calc_rsi(close_m5, RSI_PERIOD)
-    macd_line, sig_line, _ = calc_macd(close_m5, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
-    ema_h1                = calc_ema(close_h1, EMA_TREND_H1)
-
-    idx = -2  # último candle fechado
-
-    ef      = ema_fast[idx]
-    es      = ema_slow[idx]
-    ef_p1   = ema_fast[idx - 1]
-    es_p1   = ema_slow[idx - 1]
-    ef_p2   = ema_fast[idx - 2]
-    es_p2   = ema_slow[idx - 2]
-    rsi_val  = rsi[idx]
-    macd_val = macd_line[idx]
-    sig_val  = sig_line[idx]
-    h1_ema   = ema_h1[-1]
-    price    = close_m5[idx]
-
-    if any(
-        np.isnan(v) for v in [ef, es, ef_p1, es_p1, ef_p2, es_p2, rsi_val, macd_val, sig_val, h1_ema]
-    ):
-        log.debug("%s: NaN nos indicadores — ignorado.", symbol)
-        return None
-
-    # --- Critério 1: EMA crossover ou pré-crossover ---
-    cross_up   = ef_p1 < es_p1 and ef > es
-    cross_down = ef_p1 > es_p1 and ef < es
-
-    dist_curr = abs(ef - es)
-    dist_p1   = abs(ef_p1 - es_p1)
-    dist_p2   = abs(ef_p2 - es_p2)
-    converging = dist_curr < dist_p1 < dist_p2
-    near       = (dist_curr / pip_size) < EMA_CROSSOVER_PIPS_THR
-
-    if cross_up:
-        c1 = "BUY"
-    elif cross_down:
-        c1 = "SELL"
-    elif converging and near:
-        # EMA9 abaixo do EMA21 e convergindo → aproxima de cima → sinal de BUY iminente
-        c1 = "BUY" if ef < es else "SELL"
-    else:
-        c1 = "NEUTRAL"
-
-    # --- Critério 2: RSI ---
-    if RSI_BUY_MIN <= rsi_val <= RSI_BUY_MAX:
-        c2 = "BUY"
-    elif RSI_SELL_MIN <= rsi_val <= RSI_SELL_MAX:
-        c2 = "SELL"
-    else:
-        c2 = "NEUTRAL"
-
-    # --- Critério 3: MACD ---
-    if macd_val > sig_val:
-        c3 = "BUY"
-    elif macd_val < sig_val:
-        c3 = "SELL"
-    else:
-        c3 = "NEUTRAL"
-
-    # --- Critério 4: Filtro H1 ---
-    if price > h1_ema:
-        c4 = "BUY"
-    elif price < h1_ema:
-        c4 = "SELL"
-    else:
-        c4 = "NEUTRAL"
-
-    criterios  = {"c1": c1, "c2": c2, "c3": c3, "c4": c4}
-    buy_count  = sum(1 for v in criterios.values() if v == "BUY")
-    sell_count = sum(1 for v in criterios.values() if v == "SELL")
-
-    if buy_count > sell_count:
-        direction = "BUY"
-        score     = buy_count
-    elif sell_count > buy_count:
-        direction = "SELL"
-        score     = sell_count
-    else:
-        direction = "NEUTRAL"
-        score     = max(buy_count, sell_count)
-
-    log.debug(
-        "%s | score=%d dir=%-7s | c1=%-7s c2=%-7s c3=%-7s c4=%-7s | "
-        "RSI=%.1f MACD=%.5f SIG=%.5f",
-        symbol, score, direction, c1, c2, c3, c4, rsi_val, macd_val, sig_val,
-    )
-
-    return {
-        "symbol":      symbol,
-        "score":       score,
-        "direction":   direction,
-        "criterios":   criterios,
-        "spread_pips": sym_info.get("spread_pips", 0.0),
-        "category":    sym_info["category"],
-        "pip_size":    pip_size,
-        "pip_value":   sym_info["pip_value"],
-    }
-
-
-# ============================================================
-# CONTROLE DE CORRELAÇÃO
-# ============================================================
 def get_currencies(symbol: str) -> set:
     """Extrai o par de moedas dos primeiros 6 caracteres do símbolo."""
     clean = symbol[:6] if len(symbol) >= 6 else symbol
     return {clean[:3].upper(), clean[3:6].upper()}
 
 
-def check_correlation(candidate: str, open_positions) -> bool:
-    """
-    Retorna True (bloquear) se alguma posição aberta compartilha
-    moeda base ou cotada com o candidato.
-    Ex.: EUR/USD aberto → bloqueia EUR/JPY (EUR), GBP/USD (USD).
-    """
-    cand_currencies = get_currencies(candidate)
-    for pos in open_positions:
-        shared = cand_currencies & get_currencies(pos.symbol)
-        if shared:
-            log.debug(
-                "CORRELAÇÃO: %s bloqueado por %s (moeda: %s)",
-                candidate, pos.symbol, shared,
-            )
-            return True
-    return False
+def get_magic_positions() -> list:
+    """Retorna lista de posições abertas pelo magic number deste scanner."""
+    return [p for p in (mt5.positions_get() or []) if p.magic == MAGIC]
+
+
+# Mapeamento: moeda → sessões em que tem liquidez primária
+_SESSIONS_BY_CURRENCY: Dict[str, FrozenSet[str]] = {
+    "EUR": frozenset({"london", "new_york"}),
+    "GBP": frozenset({"london", "new_york"}),
+    "CHF": frozenset({"london", "new_york"}),
+    "USD": frozenset({"london", "new_york"}),
+    "CAD": frozenset({"new_york"}),
+    "JPY": frozenset({"asian", "new_york"}),
+    "AUD": frozenset({"asian", "new_york"}),
+    "NZD": frozenset({"asian", "new_york"}),
+}
+
+
+def _sessoes_ativas(hora_utc: int) -> FrozenSet[str]:
+    """Retorna o conjunto de sessões abertas para a hora UTC informada."""
+    ativas: set = set()
+    if SESSION_LONDON_START <= hora_utc < SESSION_LONDON_END:
+        ativas.add("london")
+    if SESSION_NY_START <= hora_utc < SESSION_NY_END:
+        ativas.add("new_york")
+    if hora_utc >= 22 or hora_utc < SESSION_ASIAN_END:   # janela overnight
+        ativas.add("asian")
+    return frozenset(ativas)
 
 
 # ============================================================
-# LOOP PRINCIPAL DO SCANNER
+# PIPELINE — CHAIN OF RESPONSIBILITY
 # ============================================================
-def run_scanner(capital: float) -> None:
-    log.info("=" * 70)
-    log.info("Forex Scanner Multi-Par iniciando | Capital=%.2f USD", capital)
-    log.info(
-        "Risco=%.0f%% | SL=%d pips | TP=%d pips | Max posições=%d | Magic=%d",
-        RISK_PCT * 100, SL_PIPS, int(SL_PIPS * TP_RATIO), MAX_TOTAL_POSITIONS, MAGIC,
-    )
-    log.info(
-        "Spread: Majors≤%.1fp | Minors≤%.1fp | Exotics=bloqueado | spread/SL≤%.0f%%",
-        SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_PCT_OF_SL * 100,
-    )
-    log.info("=" * 70)
+class FiltroBase(ABC):
+    """Contrato de todos os filtros do pipeline."""
+    @abstractmethod
+    def executar(self, candidato: CandidatoInfo) -> Optional[CandidatoInfo]:
+        ...
 
-    if not connect():
-        sys.exit(1)
 
-    iteration = 0
-    while True:
-        iteration += 1
-        log.debug("=== Ciclo %d ===", iteration)
+class FiltroExoticos(FiltroBase):
+    """Descarta Exotics antes de qualquer chamada ao MT5."""
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        if c.category == "Exotics":
+            log.debug("SKIP Exotic: %s", c.symbol)
+            return None
+        return c
 
-        try:
-            # 1. Descobrir e filtrar símbolos
-            all_forex = discover_forex_symbols()
-            filtered  = filter_by_spread(all_forex)
 
-            # 2. Calcular scores
-            scored = []
-            for sym_info in filtered:
-                result = calc_score(sym_info)
-                if result is not None:
-                    scored.append(result)
+class FiltroSessao(FiltroBase):
+    """
+    Bloqueia pares fora do horário de liquidez das suas moedas.
 
-            # 3. Ordenar: score desc, spread asc (desempate)
-            scored.sort(key=lambda x: (-x["score"], x["spread_pips"]))
+    Lógica: um par é negociável se CADA moeda possui ao menos uma sessão
+    ativa no momento. Moeda não mapeada (exótica remanescente) → permissivo.
 
-            # 4. Separar por nível de score (excluir NEUTRAL da fila de ação)
-            actionable = [s for s in scored if s["score"] == 4 and s["direction"] != "NEUTRAL"]
-            alerts     = [s for s in scored if s["score"] == 3 and s["direction"] != "NEUTRAL"]
+    Exemplos de janelas resultantes (UTC):
+      EUR/USD → 07h–22h  (Londres + NY)
+      USD/JPY → 13h–22h  (só overlap NY)
+      AUD/NZD → 22h–09h + 13h–22h  (Ásia + NY)
+      EUR/JPY → 13h–22h  (só overlap NY — EUR tem Londres, JPY não)
+    """
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        hora_utc = datetime.now(timezone.utc).hour
+        ativas   = _sessoes_ativas(hora_utc)
 
-            # 5. Logar alertas score=3 (WARNING)
-            for alert in alerts:
-                log.warning(
-                    "[ALERTA] %s score=%d dir=%s spread=%.1fp cat=%s "
-                    "| c1=%s c2=%s c3=%s c4=%s — aguardando critério faltante",
-                    alert["symbol"], alert["score"], alert["direction"],
-                    alert["spread_pips"], alert["category"],
-                    alert["criterios"]["c1"], alert["criterios"]["c2"],
-                    alert["criterios"]["c3"], alert["criterios"]["c4"],
-                )
-
-            # 6. Obter posições abertas pelo magic number
-            all_open  = mt5.positions_get() or []
-            magic_pos = [p for p in all_open if p.magic == MAGIC]
-            entries_done = 0
-
-            if len(magic_pos) >= MAX_TOTAL_POSITIONS:
+        for moeda in get_currencies(c.symbol):
+            sessoes_moeda = _SESSIONS_BY_CURRENCY.get(moeda, ativas)  # desconhecida → permissivo
+            if not (sessoes_moeda & ativas):
                 log.debug(
-                    "Limite global atingido (%d/%d posições) — sem novas entradas.",
-                    len(magic_pos), MAX_TOTAL_POSITIONS,
+                    "SKIP sessão %s | UTC %02dh | %s fora de sessão (ativas=%s)",
+                    c.symbol, hora_utc, moeda, set(ativas),
                 )
-            else:
-                for candidate in actionable:
-                    if len(magic_pos) >= MAX_TOTAL_POSITIONS:
-                        break
+                return None
+        return c
 
-                    sym       = candidate["symbol"]
-                    direction = candidate["direction"]
 
-                    # Verificar limite por símbolo
-                    sym_count = sum(1 for p in magic_pos if p.symbol == sym)
-                    if sym_count >= MAX_POSITIONS_PER_SYMBOL:
-                        log.debug("%s: limite por símbolo atingido (%d).", sym, sym_count)
-                        continue
+class FiltroSpread(FiltroBase):
+    """Descarta se spread excede o limite da categoria ou 20% do SL."""
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        tick = mt5.symbol_info_tick(c.symbol)
+        if tick is None or tick.ask == 0 or tick.bid == 0:
+            log.debug("SKIP sem tick: %s", c.symbol)
+            return None
 
-                    # Verificar correlação
-                    if check_correlation(sym, magic_pos):
-                        log.info("CORRELAÇÃO BLOQUEOU: %s", sym)
-                        continue
+        spread_pips = (tick.ask - tick.bid) / c.pip_size
+        max_spread  = SPREAD_MAX_MAJORS if c.category == "Majors" else SPREAD_MAX_MINORS
 
-                    # Calcular lote
-                    lot = calc_lot(capital, candidate["pip_value"], sym)
-                    if lot <= 0:
-                        log.warning("%s: lote inválido (%.2f) — pulando.", sym, lot)
-                        continue
+        if spread_pips > max_spread:
+            log.debug("SKIP spread %s: %.2fp > %.2fp", c.symbol, spread_pips, max_spread)
+            return None
+        if (spread_pips / SL_PIPS) > SPREAD_MAX_PCT_OF_SL:
+            log.debug("SKIP spread/SL %s: %.1f%%", c.symbol, spread_pips / SL_PIPS * 100)
+            return None
 
-                    # Obter preço atual
-                    tick = mt5.symbol_info_tick(sym)
-                    if tick is None:
-                        log.warning("%s: sem tick disponível.", sym)
-                        continue
+        c.spread_pips = round(spread_pips, 2)
+        return c
 
-                    pip_size = candidate["pip_size"]
 
-                    if direction == "BUY":
-                        price  = tick.ask
-                        sl     = round(price - SL_PIPS * pip_size, 5)
-                        tp     = round(price + SL_PIPS * TP_RATIO * pip_size, 5)
-                        otype  = mt5.ORDER_TYPE_BUY
-                    else:
-                        price  = tick.bid
-                        sl     = round(price + SL_PIPS * pip_size, 5)
-                        tp     = round(price - SL_PIPS * TP_RATIO * pip_size, 5)
-                        otype  = mt5.ORDER_TYPE_SELL
+class FiltroIndicadores(FiltroBase):
+    """Busca barras, calcula indicadores e avalia os 4 critérios Triple Confirmation."""
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        df_m5 = get_bars(c.symbol, TF_M5, BARS_M5)
+        df_h1 = get_bars(c.symbol, TF_H1, BARS_H1)
+        if df_m5 is None or df_h1 is None:
+            return None
 
-                    comment = f"SCAN_{direction}_{sym}"
+        close_m5 = df_m5["close"].values
+        close_h1 = df_h1["close"].values
 
-                    log.info(
-                        "CANDIDATO score=4 | %s %s | lote=%.2f | spread=%.2fp | "
-                        "c1=%s c2=%s c3=%s c4=%s",
-                        sym, direction, lot, candidate["spread_pips"],
-                        candidate["criterios"]["c1"], candidate["criterios"]["c2"],
-                        candidate["criterios"]["c3"], candidate["criterios"]["c4"],
-                    )
+        ema_fast               = calc_ema(close_m5, EMA_FAST)
+        ema_slow               = calc_ema(close_m5, EMA_SLOW)
+        rsi                    = calc_rsi(close_m5, RSI_PERIOD)
+        macd_line, sig_line, _ = calc_macd(close_m5, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+        ema_h1                 = calc_ema(close_h1, EMA_TREND_H1)
 
-                    if place_order(sym, otype, lot, price, sl, tp, comment):
-                        entries_done += 1
-                        # Atualiza lista local para verificar correlação no próximo candidato
-                        magic_pos = [p for p in (mt5.positions_get() or []) if p.magic == MAGIC]
+        idx = -2  # último candle fechado
+        ef, es         = ema_fast[idx],     ema_slow[idx]
+        ef_p1, es_p1   = ema_fast[idx - 1], ema_slow[idx - 1]
+        ef_p2, es_p2   = ema_fast[idx - 2], ema_slow[idx - 2]
+        rsi_val        = rsi[idx]
+        macd_val       = macd_line[idx]
+        sig_val        = sig_line[idx]
+        h1_ema         = ema_h1[-1]
+        price          = close_m5[idx]
 
-            # 7. Resumo do ciclo
-            log.info(
-                "[SCAN] %d pares | %d passaram spread | %d score≥3 | %d entrada(s) executada(s)",
-                len(all_forex), len(filtered), len(alerts) + len(actionable), entries_done,
+        if any(np.isnan(v) for v in [ef, es, ef_p1, es_p1, ef_p2, es_p2,
+                                      rsi_val, macd_val, sig_val, h1_ema]):
+            log.debug("%s: NaN nos indicadores — ignorado.", c.symbol)
+            return None
+
+        # C1: crossover ou pré-crossover convergindo
+        cross_up   = ef_p1 < es_p1 and ef > es
+        cross_down = ef_p1 > es_p1 and ef < es
+        converging = abs(ef - es) < abs(ef_p1 - es_p1) < abs(ef_p2 - es_p2)
+        near       = (abs(ef - es) / c.pip_size) < EMA_CROSSOVER_PIPS_THR
+
+        if cross_up:
+            c1 = "BUY"
+        elif cross_down:
+            c1 = "SELL"
+        elif converging and near:
+            c1 = "BUY" if ef < es else "SELL"
+        else:
+            c1 = "NEUTRAL"
+
+        # C2: RSI na faixa
+        if RSI_BUY_MIN <= rsi_val <= RSI_BUY_MAX:
+            c2 = "BUY"
+        elif RSI_SELL_MIN <= rsi_val <= RSI_SELL_MAX:
+            c2 = "SELL"
+        else:
+            c2 = "NEUTRAL"
+
+        # C3: MACD alinhado com signal
+        if macd_val > sig_val:
+            c3 = "BUY"
+        elif macd_val < sig_val:
+            c3 = "SELL"
+        else:
+            c3 = "NEUTRAL"
+
+        # C4: preço vs EMA50 H1
+        if price > h1_ema:
+            c4 = "BUY"
+        elif price < h1_ema:
+            c4 = "SELL"
+        else:
+            c4 = "NEUTRAL"
+
+        criterios  = {"c1": c1, "c2": c2, "c3": c3, "c4": c4}
+        buy_count  = sum(1 for v in criterios.values() if v == "BUY")
+        sell_count = sum(1 for v in criterios.values() if v == "SELL")
+
+        if buy_count > sell_count:
+            c.direction, c.score = "BUY",     buy_count
+        elif sell_count > buy_count:
+            c.direction, c.score = "SELL",    sell_count
+        else:
+            c.direction, c.score = "NEUTRAL", max(buy_count, sell_count)
+
+        c.criterios = criterios
+
+        log.debug(
+            "%s | score=%d dir=%-7s | c1=%-7s c2=%-7s c3=%-7s c4=%-7s | RSI=%.1f MACD=%.5f",
+            c.symbol, c.score, c.direction, c1, c2, c3, c4, rsi_val, macd_val,
+        )
+        return c
+
+
+class FiltroValidacaoEntrada(FiltroBase):
+    """
+    Exige score = 4: todos os critérios devem alinhar na mesma direção.
+
+    Regra de execução (alinhada ao CLAUDE.md):
+      score 4 (C1+C2+C3+C4 na mesma direção) → passa para execução
+      score 3 (apenas 3 critérios alinhados)  → WARNING, sem entrada
+      score ≤ 2 ou NEUTRAL                    → descartado silenciosamente
+
+    Semântica dos critérios:
+      C1 EMA 9/21 crossover  : gatilho de entrada (timing)
+      C2 RSI na faixa         : confirmação de momentum (timing)
+      C3 MACD > Signal        : confirmação de direção
+      C4 Preço vs EMA50 H1    : filtro de tendência macro (obrigatório)
+    """
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        if c.direction == "NEUTRAL":
+            return None
+
+        d  = c.direction
+        cr = c.criterios
+
+        # Score 4: todos os critérios devem apontar para a mesma direção
+        todos_ok = cr["c1"] == d and cr["c2"] == d and cr["c3"] == d and cr["c4"] == d
+
+        if todos_ok:
+            return c
+
+        # Score 3: loga alerta mas não opera
+        if c.score == 3:
+            log.warning(
+                "[ALERTA] %s score=3 dir=%s spread=%.1fp cat=%s"
+                " | c1=%s c2=%s c3=%s c4=%s — aguardando critério faltante",
+                c.symbol, d, c.spread_pips, c.category,
+                cr["c1"], cr["c2"], cr["c3"], cr["c4"],
             )
 
-        except KeyboardInterrupt:
-            log.info("Interrompido pelo usuário (Ctrl+C).")
-            break
-        except Exception as exc:
-            log.error("Erro no ciclo %d: %s", iteration, exc, exc_info=True)
+        return None
 
-        time.sleep(LOOP_SECONDS)
 
-    mt5.shutdown()
-    log.info("Conexão MT5 encerrada. Scanner finalizado.")
+class FiltroCorrelacao(FiltroBase):
+    """Bloqueia entrada se par compartilha moeda base ou cotada com posição aberta."""
+    def __init__(self, open_positions: list) -> None:
+        self._positions = open_positions
+
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        cand_currencies = get_currencies(c.symbol)
+        for pos in self._positions:
+            shared = cand_currencies & get_currencies(pos.symbol)
+            if shared:
+                log.debug("CORRELAÇÃO: %s bloqueado por %s (moeda: %s)", c.symbol, pos.symbol, shared)
+                return None
+        return c
+
+
+class FiltroPosicaoPorSimbolo(FiltroBase):
+    """Bloqueia se o símbolo já atingiu MAX_POSITIONS_PER_SYMBOL."""
+    def __init__(self, open_positions: list) -> None:
+        self._positions = open_positions
+
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        count = sum(1 for p in self._positions if p.symbol == c.symbol)
+        if count >= MAX_POSITIONS_PER_SYMBOL:
+            log.debug("%s: limite por símbolo atingido (%d).", c.symbol, count)
+            return None
+        return c
+
+
+class Pipeline:
+    """Executa filtros em cadeia; para imediatamente no primeiro None."""
+    def __init__(self, *filtros: FiltroBase) -> None:
+        self._filtros = filtros
+
+    def processar(self, candidato: CandidatoInfo) -> Optional[CandidatoInfo]:
+        atual: Optional[CandidatoInfo] = candidato
+        for filtro in self._filtros:
+            atual = filtro.executar(atual)
+            if atual is None:
+                return None
+        return atual
+
+
+# ============================================================
+# STATE PATTERN
+# ============================================================
+class EstadoBase(ABC):
+    @abstractmethod
+    def processar(self, robo: ScannerRobot) -> EstadoBase:
+        ...
+
+
+class EstadoAguardandoSinal(EstadoBase):
+    """
+    Varre o mercado, avalia sinais via pipeline e executa entradas.
+
+    Pipeline estático (construído uma vez por ciclo):
+      FiltroExoticos → FiltroSessao → FiltroSpread → FiltroIndicadores → FiltroValidacaoEntrada
+
+    Validação dinâmica (reconstruída após cada entrada para capturar
+    posições abertas no mesmo ciclo):
+      FiltroPosicaoPorSimbolo → FiltroCorrelacao
+    """
+
+    def processar(self, robo: ScannerRobot) -> EstadoBase:
+        magic_pos = get_magic_positions()
+
+        if len(magic_pos) >= MAX_TOTAL_POSITIONS:
+            log.debug(
+                "Limite global atingido (%d/%d) → gerenciando posições.",
+                len(magic_pos), MAX_TOTAL_POSITIONS,
+            )
+            return EstadoGerenciandoPosicao()
+
+        # Fase 1: pipeline estático — avalia todos os símbolos
+        candidatos    = discover_forex_symbols()
+        static_pipe   = Pipeline(
+            FiltroExoticos(),
+            FiltroSessao(),
+            FiltroSpread(),
+            FiltroIndicadores(),
+            FiltroValidacaoEntrada(),
+        )
+        aprovados: List[CandidatoInfo] = []
+        for raw in candidatos:
+            resultado = static_pipe.processar(raw)
+            if resultado is not None:
+                aprovados.append(resultado)
+
+        aprovados.sort(key=lambda x: (-x.score, x.spread_pips))
+
+        # Fase 2: validação dinâmica e execução — posições atualizadas a cada entrada
+        entries_done = 0
+        for c in aprovados:
+            if len(magic_pos) >= MAX_TOTAL_POSITIONS:
+                break
+
+            entry_pipe = Pipeline(
+                FiltroPosicaoPorSimbolo(magic_pos),
+                FiltroCorrelacao(magic_pos),
+            )
+            if entry_pipe.processar(c) is None:
+                continue
+
+            lot = calc_lot(robo.capital, c.pip_value, c.symbol)
+            if lot <= 0:
+                log.warning("%s: lote inválido (%.2f) — pulando.", c.symbol, lot)
+                continue
+
+            tick = mt5.symbol_info_tick(c.symbol)
+            if tick is None:
+                log.warning("%s: sem tick disponível.", c.symbol)
+                continue
+
+            if c.direction == "BUY":
+                price = tick.ask
+                sl    = round(price - SL_PIPS * c.pip_size, 5)
+                tp    = round(price + SL_PIPS * TP_RATIO * c.pip_size, 5)
+                otype = mt5.ORDER_TYPE_BUY
+            else:
+                price = tick.bid
+                sl    = round(price + SL_PIPS * c.pip_size, 5)
+                tp    = round(price - SL_PIPS * TP_RATIO * c.pip_size, 5)
+                otype = mt5.ORDER_TYPE_SELL
+
+            log.info(
+                "CANDIDATO score=4 | %s %s | lote=%.2f | spread=%.2fp | c1=%s c2=%s c3=%s c4=%s",
+                c.symbol, c.direction, lot, c.spread_pips,
+                c.criterios["c1"], c.criterios["c2"], c.criterios["c3"], c.criterios["c4"],
+            )
+
+            if place_order(c.symbol, otype, lot, price, sl, tp, f"SCAN_{c.direction}_{c.symbol}"):
+                entries_done += 1
+                magic_pos = get_magic_positions()  # atualiza para o próximo candidato
+
+        log.info(
+            "[SCAN] %d pares | %d passaram filtros | %d entrada(s) executada(s)",
+            len(candidatos), len(aprovados), entries_done,
+        )
+
+        if len(magic_pos) >= MAX_TOTAL_POSITIONS:
+            return EstadoGerenciandoPosicao()
+        return self
+
+
+class EstadoGerenciandoPosicao(EstadoBase):
+    """
+    Monitora posições abertas. Retorna a EstadoAguardandoSinal
+    assim que um slot fica disponível.
+    """
+
+    def processar(self, robo: ScannerRobot) -> EstadoBase:
+        magic_pos = get_magic_positions()
+        log.debug(
+            "Posições abertas: %d/%d — aguardando fechamento.",
+            len(magic_pos), MAX_TOTAL_POSITIONS,
+        )
+
+        if len(magic_pos) < MAX_TOTAL_POSITIONS:
+            log.info(
+                "Slot disponível (%d/%d) → retornando à busca de sinais.",
+                len(magic_pos), MAX_TOTAL_POSITIONS,
+            )
+            return EstadoAguardandoSinal()
+        return self
+
+
+# ============================================================
+# ROBÔ SCANNER
+# ============================================================
+class ScannerRobot:
+    """Gerencia o loop de 15s e delega toda a lógica ao estado atual."""
+
+    def __init__(self, capital: float) -> None:
+        self.capital         = capital
+        self._estado: EstadoBase = EstadoAguardandoSinal()
+
+    def run(self) -> None:
+        log.info("=" * 70)
+        log.info("Forex Scanner Multi-Par iniciando | Capital=%.2f USD", self.capital)
+        log.info(
+            "Risco=%.0f%% | SL=%d pips | TP=%d pips | Max posições=%d | Magic=%d",
+            RISK_PCT * 100, SL_PIPS, int(SL_PIPS * TP_RATIO), MAX_TOTAL_POSITIONS, MAGIC,
+        )
+        log.info(
+            "Spread: Majors≤%.1fp | Minors≤%.1fp | Exotics=bloqueado | spread/SL≤%.0f%%",
+            SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_PCT_OF_SL * 100,
+        )
+        log.info("=" * 70)
+
+        if not connect():
+            sys.exit(1)
+
+        iteration = 0
+        while True:
+            iteration += 1
+            log.debug("=== Ciclo %d [%s] ===", iteration, type(self._estado).__name__)
+            try:
+                self._estado = self._estado.processar(self)
+            except KeyboardInterrupt:
+                log.info("Interrompido pelo usuário (Ctrl+C).")
+                break
+            except Exception as exc:
+                log.error("Erro no ciclo %d: %s", iteration, exc, exc_info=True)
+
+            time.sleep(LOOP_SECONDS)
+
+        mt5.shutdown()
+        log.info("Conexão MT5 encerrada. Scanner finalizado.")
 
 
 # ============================================================
@@ -701,4 +782,4 @@ if __name__ == "__main__":
     print(f"  Score mínimo entrada: 4/4 (Triple Confirmation completa)")
     print()
 
-    run_scanner(capital_usd)
+    ScannerRobot(capital_usd).run()
