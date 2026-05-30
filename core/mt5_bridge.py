@@ -85,15 +85,41 @@ def calc_lot(
         lote = (capital × risk_pct) / (sl_pips × pip_value)
 
     Arredonda para o volume_step do símbolo e respeita volume_min/max.
+
+    Retorna 0.0 e loga um aviso se o lote mínimo do ativo gerar um
+    risco real mais que 2× o risco configurado — protege contra a
+    situação em que volume_min de ativos como BTC inviabiliza a gestão
+    de risco com capital pequeno.
     """
     if pip_value <= 0:
         return 0.01
-    raw_lot = (capital * risk_pct) / (sl_pips * pip_value)
+
+    target_risk = capital * risk_pct
+    raw_lot     = target_risk / (sl_pips * pip_value)
+
     sym = mt5.symbol_info(symbol)
     if sym:
         step    = sym.volume_step if sym.volume_step > 0 else 0.01
         raw_lot = round(raw_lot / step) * step
         raw_lot = max(sym.volume_min, min(sym.volume_max, raw_lot))
+
+        # Guarda: verifica se o arredondamento para volume_min explodiu o risco
+        actual_risk = raw_lot * sl_pips * pip_value
+        if actual_risk > target_risk * 2.0:
+            min_capital = (sym.volume_min * sl_pips * pip_value) / risk_pct
+            log.warning(
+                "%s: capital insuficiente — risco real após arredondamento "
+                "(%.2f USD) é %.0f× maior que o configurado (%.2f USD). "
+                "Capital mínimo estimado para este ativo com SL=%d pips: "
+                "~%.0f USD. Operação cancelada.",
+                symbol, actual_risk, actual_risk / target_risk,
+                target_risk, sl_pips, min_capital,
+            )
+            return 0.0
+
+    log.debug("%s: lote=%.4f | risco_alvo=%.2f USD | risco_real=%.2f USD",
+              symbol, raw_lot, target_risk, raw_lot * sl_pips * pip_value)
+
     return round(raw_lot, 2)
 
 
