@@ -149,8 +149,16 @@ class FiltroSpread(FiltroBase):
             log.debug("SKIP spread %s (%s): %.2fp > %.2fp",
                       c.symbol, c.category, spread_pips, max_spread)
             return None
-        if (spread_pips / c.sl_pips) > SPREAD_MAX_PCT_OF_SL:
-            log.debug("SKIP spread/SL %s: %.1f%%", c.symbol, spread_pips / c.sl_pips * 100)
+
+        # Para cripto: sl_pips dinâmico baseado no preço atual (sl_pct × mid_price / pip_size)
+        if c.sl_pct is not None:
+            mid_price      = (tick.ask + tick.bid) / 2
+            eff_sl_pips    = max(1, round(mid_price * c.sl_pct / c.pip_size))
+        else:
+            eff_sl_pips    = c.sl_pips
+
+        if (spread_pips / eff_sl_pips) > SPREAD_MAX_PCT_OF_SL:
+            log.debug("SKIP spread/SL %s: %.1f%%", c.symbol, spread_pips / eff_sl_pips * 100)
             return None
 
         c.spread_pips = round(spread_pips, 2)

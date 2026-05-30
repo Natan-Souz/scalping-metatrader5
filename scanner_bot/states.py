@@ -105,11 +105,6 @@ class EstadoAguardandoSinal(EstadoBase):
             if entry_pipe.processar(c) is None:
                 continue
 
-            lot = calc_lot(robo.capital, c.pip_value, c.symbol, RISK_PCT, c.sl_pips)
-            if lot <= 0:
-                log.warning("%s: lote inválido (%.2f) — pulando.", c.symbol, lot)
-                continue
-
             tick = mt5.symbol_info_tick(c.symbol)
             if tick is None:
                 log.warning("%s: sem tick disponível.", c.symbol)
@@ -122,8 +117,21 @@ class EstadoAguardandoSinal(EstadoBase):
                 price = tick.bid
                 otype = mt5.ORDER_TYPE_SELL
 
+            # SL efetivo: cripto usa % do preço (dinâmico); forex usa pips fixos
+            if c.sl_pct is not None:
+                eff_sl_pips = max(1, round(price * c.sl_pct / c.pip_size))
+                log.debug("%s: SL %.0f%% do preço → %d pips equiv. (preço=%.5f)",
+                          c.symbol, c.sl_pct * 100, eff_sl_pips, price)
+            else:
+                eff_sl_pips = c.sl_pips
+
+            lot = calc_lot(robo.capital, c.pip_value, c.symbol, RISK_PCT, eff_sl_pips)
+            if lot <= 0:
+                log.warning("%s: lote inválido (%.2f) — pulando.", c.symbol, lot)
+                continue
+
             sl, tp = calc_sl_tp(c.symbol, c.direction, price,
-                                c.sl_pips, c.pip_size, TP_RATIO)
+                                eff_sl_pips, c.pip_size, TP_RATIO)
             if sl == 0.0 or tp == 0.0:
                 continue
 

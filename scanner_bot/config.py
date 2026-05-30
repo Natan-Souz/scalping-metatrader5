@@ -22,7 +22,7 @@ from config import (
     # Risco e operacional — forex
     FOREX_RISK_PCT            as RISK_PCT,
     FOREX_SL_PIPS             as SL_PIPS,
-    CRYPTO_SL_PIPS            as SL_PIPS_CRYPTO,
+    CRYPTO_SL_PCT,
     TP_RATIO,
     FOREX_MAX_TOTAL_POSITIONS as MAX_TOTAL_POSITIONS,
     FOREX_MAX_POS_PER_SYMBOL  as MAX_POSITIONS_PER_SYMBOL,

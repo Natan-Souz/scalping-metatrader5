@@ -9,7 +9,7 @@ from typing import List
 import MetaTrader5 as mt5
 
 from core.mt5_bridge import get_pip_info
-from scanner_bot.config import MAGIC, SL_PIPS, SL_PIPS_CRYPTO
+from scanner_bot.config import MAGIC, SL_PIPS, CRYPTO_SL_PCT
 from scanner_bot.models import CandidatoInfo
 
 log = logging.getLogger(__name__)
@@ -36,13 +36,13 @@ def discover_symbols() -> List[CandidatoInfo]:
       - trade_mode == SYMBOL_TRADE_MODE_FULL (4)
 
     Categorias e SL derivados do path:
-      crypto              → Crypto   | sl_pips = SL_PIPS_CRYPTO
-      forex + "major"     → Majors   | sl_pips = SL_PIPS
-      forex + "exotic"    → Exotics  | sl_pips = SL_PIPS
-      forex (demais)      → Minors   | sl_pips = SL_PIPS
+      crypto          → Crypto   | sl_pct = CRYPTO_SL_PCT (% do preço, dinâmico)
+      forex + "major" → Majors   | sl_pips = SL_PIPS (fixo em pips)
+      forex + "exotic"→ Exotics  | sl_pips = SL_PIPS
+      forex (demais)  → Minors   | sl_pips = SL_PIPS
 
     Returns:
-        Lista de CandidatoInfo com pip_size, pip_value e sl_pips calculados.
+        Lista de CandidatoInfo com pip_size, pip_value e sl configurados.
     """
     all_symbols = mt5.symbols_get()
     if not all_symbols:
@@ -89,15 +89,18 @@ def discover_symbols() -> List[CandidatoInfo]:
         if pip_size <= 0 or pip_value <= 0:
             continue
 
-        sl_pips = SL_PIPS_CRYPTO if category == "Crypto" else SL_PIPS
-
-        result.append(CandidatoInfo(
-            symbol=sym.name,
-            category=category,
-            pip_size=pip_size,
-            pip_value=pip_value,
-            sl_pips=sl_pips,
-        ))
+        if category == "Crypto":
+            result.append(CandidatoInfo(
+                symbol=sym.name, category=category,
+                pip_size=pip_size, pip_value=pip_value,
+                sl_pct=CRYPTO_SL_PCT,   # SL dinâmico: % do preço de entrada
+            ))
+        else:
+            result.append(CandidatoInfo(
+                symbol=sym.name, category=category,
+                pip_size=pip_size, pip_value=pip_value,
+                sl_pips=SL_PIPS,        # SL fixo em pips (forex)
+            ))
 
     log.debug(
         "Descartados: path=%d | excluídos=%d | trade_mode≠FULL=%d",

@@ -82,7 +82,8 @@ SESSION_ASIAN_END    = 9
 CRYPTO_MAGIC               = 765432
 CRYPTO_LOG_FILE            = "logs/crypto_scanner.log"
 CRYPTO_RISK_PCT            = 0.025   # 2,5% do capital por trade
-CRYPTO_SL_PIPS             = 2000    # ~$200 no BTC se pip ≈ $0.10
+CRYPTO_SL_PCT              = 0.02    # SL = 2% do preço de entrada (ex: BTC $30k → SL $600)
+                                     # TP = SL × TP_RATIO = 4% → RR 1:2
 CRYPTO_MAX_TOTAL_POSITIONS = 2
 CRYPTO_MAX_POS_PER_SYMBOL  = 1
 SPREAD_MAX_CRYPTO          = 500.0   # cripto tem spreads muito mais amplos
