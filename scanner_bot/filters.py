@@ -24,8 +24,8 @@ from scanner_bot.config import (
     EMA_FAST, EMA_SLOW, EMA_CROSSOVER_PIPS_THR,
     RSI_PERIOD, RSI_BUY_MIN, RSI_BUY_MAX, RSI_SELL_MIN, RSI_SELL_MAX,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, EMA_TREND_H1,
-    SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_PCT_OF_SL,
-    SL_PIPS, MAX_POSITIONS_PER_SYMBOL,
+    SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_CRYPTO, SPREAD_MAX_PCT_OF_SL,
+    MAX_POSITIONS_PER_SYMBOL,
     SESSION_LONDON_START, SESSION_LONDON_END,
     SESSION_NY_START, SESSION_NY_END, SESSION_ASIAN_END,
 )
@@ -89,8 +89,10 @@ class FiltroSessao(FiltroBase):
     """
     Bloqueia pares fora do horário de liquidez das suas moedas.
 
-    Lógica: um par é negociável se CADA uma de suas moedas tem ao menos
-    uma sessão ativa no momento. Moeda não mapeada → permissivo.
+    Cripto opera 24/7 — passa diretamente sem verificação.
+
+    Lógica para forex: um par é negociável se CADA uma de suas moedas
+    tem ao menos uma sessão ativa no momento. Moeda não mapeada → permissivo.
 
     Janelas resultantes (UTC):
       EUR/USD → 07h–22h  (Londres + NY)
@@ -99,6 +101,9 @@ class FiltroSessao(FiltroBase):
     """
 
     def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        if c.category == "Crypto":
+            return c  # mercado cripto opera 24/7 — sem restrição de sessão
+
         hora_utc = datetime.now(timezone.utc).hour
         ativas   = _sessoes_ativas(hora_utc)
 
@@ -119,8 +124,17 @@ class FiltroSessao(FiltroBase):
 class FiltroSpread(FiltroBase):
     """
     Descarta se spread atual excede o limite da categoria ou 20% do SL.
+    Usa o sl_pips do próprio candidato no cálculo relativo — garantindo que
+    o threshold de 20% seja proporcional ao SL real de cada categoria.
     Preenche c.spread_pips nos candidatos aprovados.
     """
+
+    _SPREAD_LIMITS = {
+        "Majors": SPREAD_MAX_MAJORS,
+        "Minors": SPREAD_MAX_MINORS,
+        "Exotics": SPREAD_MAX_MINORS,  # exotics já filtrados antes, mas cobre edge cases
+        "Crypto": SPREAD_MAX_CRYPTO,
+    }
 
     def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
         tick = mt5.symbol_info_tick(c.symbol)
@@ -129,13 +143,14 @@ class FiltroSpread(FiltroBase):
             return None
 
         spread_pips = (tick.ask - tick.bid) / c.pip_size
-        max_spread  = SPREAD_MAX_MAJORS if c.category == "Majors" else SPREAD_MAX_MINORS
+        max_spread  = self._SPREAD_LIMITS.get(c.category, SPREAD_MAX_MINORS)
 
         if spread_pips > max_spread:
-            log.debug("SKIP spread %s: %.2fp > %.2fp", c.symbol, spread_pips, max_spread)
+            log.debug("SKIP spread %s (%s): %.2fp > %.2fp",
+                      c.symbol, c.category, spread_pips, max_spread)
             return None
-        if (spread_pips / SL_PIPS) > SPREAD_MAX_PCT_OF_SL:
-            log.debug("SKIP spread/SL %s: %.1f%%", c.symbol, spread_pips / SL_PIPS * 100)
+        if (spread_pips / c.sl_pips) > SPREAD_MAX_PCT_OF_SL:
+            log.debug("SKIP spread/SL %s: %.1f%%", c.symbol, spread_pips / c.sl_pips * 100)
             return None
 
         c.spread_pips = round(spread_pips, 2)

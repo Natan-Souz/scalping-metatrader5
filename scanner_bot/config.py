@@ -10,10 +10,11 @@ import MetaTrader5 as mt5
 TF_M5 = mt5.TIMEFRAME_M5
 TF_H1 = mt5.TIMEFRAME_H1
 
-# Filtro de spread (pips)
+# Filtro de spread por categoria (pips)
 SPREAD_MAX_MAJORS      = 2.5
 SPREAD_MAX_MINORS      = 4.0
-SPREAD_MAX_PCT_OF_SL   = 0.20   # spread / SL ≤ 20%
+SPREAD_MAX_CRYPTO      = 500.0  # cripto tem spreads muito mais amplos que forex
+SPREAD_MAX_PCT_OF_SL   = 0.20   # spread / SL ≤ 20% (calculado sobre o SL da categoria)
 
 # Indicadores M5
 EMA_FAST              = 9
@@ -32,12 +33,12 @@ MACD_SIGNAL           = 9
 EMA_TREND_H1          = 50
 
 # Gestão de risco (Configuração de Referência — não alterar sem aprovação)
-RISK_PCT              = 0.01   # 1% do capital por trade
-SL_PIPS               = 12
-TP_RATIO              = 2.0    # RR 1:2 → TP = 24 pips
-
+RISK_PCT              = 0.025   # 2,5% do capital por trade
+SL_PIPS               = 6       # forex: stop loss em pips
+SL_PIPS_CRYPTO        = 2000    # cripto: ~$200 no BTC (pip ≈ $0.10) — ajuste conforme volatilidade
+TP_RATIO              = 2.0     # RR 1:2 → TP = 2 × SL_PIPS
 # Controle de posições
-MAX_TOTAL_POSITIONS      = 3
+MAX_TOTAL_POSITIONS      = 2
 MAX_POSITIONS_PER_SYMBOL = 1
 
 # Operacional

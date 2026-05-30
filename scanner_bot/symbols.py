@@ -1,6 +1,6 @@
 """
 scanner_bot.symbols
-Descoberta e utilitários de símbolos forex para o scanner.
+Descoberta e utilitários de símbolos para o scanner (forex + cripto).
 """
 
 import logging
@@ -9,7 +9,7 @@ from typing import List
 import MetaTrader5 as mt5
 
 from core.mt5_bridge import get_pip_info
-from scanner_bot.config import MAGIC
+from scanner_bot.config import MAGIC, SL_PIPS, SL_PIPS_CRYPTO
 from scanner_bot.models import CandidatoInfo
 
 log = logging.getLogger(__name__)
@@ -26,27 +26,30 @@ def get_magic_positions() -> list:
     return [p for p in (mt5.positions_get() or []) if p.magic == MAGIC]
 
 
-def discover_forex_symbols() -> List[CandidatoInfo]:
+def discover_symbols() -> List[CandidatoInfo]:
     """
-    Descobre todos os pares forex disponíveis na corretora.
+    Descobre todos os símbolos forex e cripto disponíveis na corretora.
 
     Critérios de inclusão:
-      - path contém "forex" (case-insensitive)
-      - path não contém: crypto, metals, indices, commodities, cfd
+      - path contém "forex" OU "crypto" (case-insensitive)
+      - path não contém: metals, indices, commodities, cfd
       - trade_mode == SYMBOL_TRADE_MODE_FULL (4)
 
-    Categorias derivadas do path:
-      "major" → Majors | "exotic" → Exotics | demais → Minors (fallback)
+    Categorias e SL derivados do path:
+      crypto              → Crypto   | sl_pips = SL_PIPS_CRYPTO
+      forex + "major"     → Majors   | sl_pips = SL_PIPS
+      forex + "exotic"    → Exotics  | sl_pips = SL_PIPS
+      forex (demais)      → Minors   | sl_pips = SL_PIPS
 
     Returns:
-        Lista de CandidatoInfo com pip_size e pip_value calculados.
+        Lista de CandidatoInfo com pip_size, pip_value e sl_pips calculados.
     """
     all_symbols = mt5.symbols_get()
     if not all_symbols:
         log.warning("Nenhum símbolo retornado pelo MT5.")
         return []
 
-    EXCLUDED = {"crypto", "metals", "indices", "commodities", "cfd"}
+    EXCLUDED = {"metals", "indices", "commodities", "cfd"}
     result: List[CandidatoInfo] = []
     skipped_path = skipped_excluded = skipped_mode = 0
 
@@ -54,7 +57,10 @@ def discover_forex_symbols() -> List[CandidatoInfo]:
         path       = sym.path.replace("\\", "/").strip("/")
         path_lower = path.lower()
 
-        if "forex" not in path_lower:
+        is_forex  = "forex"  in path_lower
+        is_crypto = "crypto" in path_lower
+
+        if not (is_forex or is_crypto):
             skipped_path += 1
             continue
         if any(kw in path_lower for kw in EXCLUDED):
@@ -64,7 +70,9 @@ def discover_forex_symbols() -> List[CandidatoInfo]:
             skipped_mode += 1
             continue
 
-        if "major" in path_lower:
+        if is_crypto:
+            category = "Crypto"
+        elif "major" in path_lower:
             category = "Majors"
         elif "exotic" in path_lower:
             category = "Exotics"
@@ -81,11 +89,14 @@ def discover_forex_symbols() -> List[CandidatoInfo]:
         if pip_size <= 0 or pip_value <= 0:
             continue
 
+        sl_pips = SL_PIPS_CRYPTO if category == "Crypto" else SL_PIPS
+
         result.append(CandidatoInfo(
             symbol=sym.name,
             category=category,
             pip_size=pip_size,
             pip_value=pip_value,
+            sl_pips=sl_pips,
         ))
 
     log.debug(
@@ -96,9 +107,15 @@ def discover_forex_symbols() -> List[CandidatoInfo]:
     if not result:
         unique_paths = sorted({s.path for s in all_symbols})
         log.warning(
-            "Nenhum símbolo forex após filtros! Paths disponíveis (%d): %s",
+            "Nenhum símbolo encontrado após filtros! Paths disponíveis (%d): %s",
             len(unique_paths), unique_paths[:20],
         )
 
-    log.debug("Símbolos forex descobertos: %d", len(result))
+    crypto_count = sum(1 for c in result if c.category == "Crypto")
+    forex_count  = len(result) - crypto_count
+    log.debug("Símbolos descobertos: %d forex | %d cripto", forex_count, crypto_count)
     return result
+
+
+# Alias para compatibilidade com código existente
+discover_forex_symbols = discover_symbols

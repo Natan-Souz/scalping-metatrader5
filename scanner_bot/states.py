@@ -19,7 +19,7 @@ import MetaTrader5 as mt5
 
 from core.mt5_bridge import calc_lot, place_order
 from scanner_bot.config import (
-    MAX_TOTAL_POSITIONS, SL_PIPS, TP_RATIO, MAGIC, RISK_PCT,
+    MAX_TOTAL_POSITIONS, TP_RATIO, MAGIC, RISK_PCT,
 )
 from scanner_bot.filters import (
     Pipeline,
@@ -28,7 +28,7 @@ from scanner_bot.filters import (
     FiltroCorrelacao, FiltroPosicaoPorSimbolo,
 )
 from scanner_bot.models import CandidatoInfo
-from scanner_bot.symbols import discover_forex_symbols, get_magic_positions
+from scanner_bot.symbols import discover_symbols, get_magic_positions
 
 if TYPE_CHECKING:
     from scanner_bot.robot import ScannerRobot
@@ -65,7 +65,7 @@ class EstadoAguardandoSinal(EstadoBase):
             return EstadoGerenciandoPosicao()
 
         # Fase 1: pipeline estático
-        candidatos  = discover_forex_symbols()
+        candidatos  = discover_symbols()
         static_pipe = Pipeline(
             FiltroExoticos(),
             FiltroSessao(),
@@ -94,7 +94,7 @@ class EstadoAguardandoSinal(EstadoBase):
             if entry_pipe.processar(c) is None:
                 continue
 
-            lot = calc_lot(robo.capital, c.pip_value, c.symbol, RISK_PCT, SL_PIPS)
+            lot = calc_lot(robo.capital, c.pip_value, c.symbol, RISK_PCT, c.sl_pips)
             if lot <= 0:
                 log.warning("%s: lote inválido (%.2f) — pulando.", c.symbol, lot)
                 continue
@@ -106,13 +106,13 @@ class EstadoAguardandoSinal(EstadoBase):
 
             if c.direction == "BUY":
                 price = tick.ask
-                sl    = round(price - SL_PIPS * c.pip_size, 5)
-                tp    = round(price + SL_PIPS * TP_RATIO * c.pip_size, 5)
+                sl    = round(price - c.sl_pips * c.pip_size, 5)
+                tp    = round(price + c.sl_pips * TP_RATIO * c.pip_size, 5)
                 otype = mt5.ORDER_TYPE_BUY
             else:
                 price = tick.bid
-                sl    = round(price + SL_PIPS * c.pip_size, 5)
-                tp    = round(price - SL_PIPS * TP_RATIO * c.pip_size, 5)
+                sl    = round(price + c.sl_pips * c.pip_size, 5)
+                tp    = round(price - c.sl_pips * TP_RATIO * c.pip_size, 5)
                 otype = mt5.ORDER_TYPE_SELL
 
             log.info(
