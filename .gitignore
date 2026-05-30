@@ -5,8 +5,8 @@
 symbols_flat.csv
 symbols_map.json
 
-# Pasta de memória interna do agente
-memory/
+# Pastas internas do agente / IDE
+.claude/
 
 # Python
 __pycache__/
