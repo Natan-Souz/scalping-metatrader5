@@ -124,6 +124,77 @@ def calc_lot(
 
 
 # ============================================================
+# CÁLCULO E VALIDAÇÃO DE SL/TP
+# ============================================================
+def calc_sl_tp(
+    symbol: str,
+    direction: str,
+    price: float,
+    sl_pips: int,
+    pip_size: float,
+    tp_ratio: float,
+) -> Tuple[float, float]:
+    """
+    Calcula SL e TP com arredondamento correto para o símbolo e valida
+    se os valores são aceitos pelo MT5 antes de enviar a ordem.
+
+    Verificações realizadas:
+      1. Arredonda para `sym.digits` (não hardcoded 5) — evita preços inexistentes
+      2. SL e TP > 0 — cripto baratos podem gerar TP negativo em SELL
+      3. Distância mínima >= `trade_stops_level` do símbolo
+
+    Returns:
+        (sl, tp) válidos, ou (0.0, 0.0) se qualquer verificação falhar.
+        Quando retorna (0.0, 0.0) a ordem deve ser cancelada.
+    """
+    sym = mt5.symbol_info(symbol)
+    if sym is None:
+        log.warning("%s: symbol_info indisponível para calcular SL/TP.", symbol)
+        return 0.0, 0.0
+
+    digits  = sym.digits
+    sl_dist = sl_pips * pip_size
+    tp_dist = sl_pips * tp_ratio * pip_size
+
+    if direction == "BUY":
+        sl = round(price - sl_dist, digits)
+        tp = round(price + tp_dist, digits)
+    else:
+        sl = round(price + sl_dist, digits)
+        tp = round(price - tp_dist, digits)
+
+    # Verificação 1: SL e TP devem ser positivos
+    if sl <= 0 or tp <= 0:
+        log.warning(
+            "%s: SL/TP inválido — sl=%.{d}f tp=%.{d}f. "
+            "Preço (%.{d}f) muito baixo para o SL de %d pips configurado. "
+            "Reduza SL_PIPS ou opere o ativo com preço maior.".format(d=digits),
+            symbol, sl, tp, price, sl_pips,
+        )
+        return 0.0, 0.0
+
+    # Verificação 2: distância mínima exigida pelo broker (stops_level)
+    if sym.trade_stops_level > 0:
+        min_dist    = sym.trade_stops_level * sym.point
+        actual_sl   = abs(price - sl)
+        actual_tp   = abs(price - tp)
+        too_close   = actual_sl < min_dist or actual_tp < min_dist
+        if too_close:
+            log.warning(
+                "%s: SL/TP muito próximos do preço — broker exige mínimo %.{d}f "
+                "(stops_level=%d). SL_dist=%.{d}f TP_dist=%.{d}f. "
+                "Operação cancelada.".format(d=digits),
+                symbol, min_dist, sym.trade_stops_level, actual_sl, actual_tp,
+            )
+            return 0.0, 0.0
+
+    log.debug("%s: sl=%.{d}f tp=%.{d}f (digits=%d stops_level=%d)".format(d=digits),
+              symbol, sl, tp, digits, sym.trade_stops_level)
+
+    return sl, tp
+
+
+# ============================================================
 # EXECUÇÃO DE ORDENS
 # ============================================================
 def place_order(

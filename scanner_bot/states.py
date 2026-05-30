@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 
 import MetaTrader5 as mt5
 
-from core.mt5_bridge import calc_lot, place_order
+from core.mt5_bridge import calc_lot, calc_sl_tp, place_order
 from scanner_bot.config import MAX_TOTAL_POSITIONS, TP_RATIO, RISK_PCT
 from scanner_bot.filters import (
     Pipeline,
@@ -117,14 +117,15 @@ class EstadoAguardandoSinal(EstadoBase):
 
             if c.direction == "BUY":
                 price = tick.ask
-                sl    = round(price - c.sl_pips * c.pip_size, 5)
-                tp    = round(price + c.sl_pips * TP_RATIO * c.pip_size, 5)
                 otype = mt5.ORDER_TYPE_BUY
             else:
                 price = tick.bid
-                sl    = round(price + c.sl_pips * c.pip_size, 5)
-                tp    = round(price - c.sl_pips * TP_RATIO * c.pip_size, 5)
                 otype = mt5.ORDER_TYPE_SELL
+
+            sl, tp = calc_sl_tp(c.symbol, c.direction, price,
+                                c.sl_pips, c.pip_size, TP_RATIO)
+            if sl == 0.0 or tp == 0.0:
+                continue
 
             log.info(
                 "CANDIDATO score=4 | %s %s | lote=%.2f | spread=%.2fp"

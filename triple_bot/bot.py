@@ -14,7 +14,7 @@ import logging
 import MetaTrader5 as mt5
 
 from core.logging_setup import setup_logging
-from core.mt5_bridge import connect, get_pip_info, calc_lot, place_order
+from core.mt5_bridge import connect, get_pip_info, calc_lot, calc_sl_tp, place_order
 from triple_bot.config import (
     SYMBOL, MAGIC, LOG_FILE,
     RISK_PCT, SL_PIPS, TP_RATIO,
@@ -69,16 +69,20 @@ def run(capital: float) -> None:
                     else:
                         if signal == "BUY":
                             price = tick.ask
-                            sl    = round(price - SL_PIPS * pip_size, 5)
-                            tp    = round(price + SL_PIPS * TP_RATIO * pip_size, 5)
-                            place_order(SYMBOL, mt5.ORDER_TYPE_BUY, lot, price, sl, tp,
-                                        MAGIC, "TC_BUY")
+                            otype = mt5.ORDER_TYPE_BUY
+                            comment = "TC_BUY"
                         else:
                             price = tick.bid
-                            sl    = round(price + SL_PIPS * pip_size, 5)
-                            tp    = round(price - SL_PIPS * TP_RATIO * pip_size, 5)
-                            place_order(SYMBOL, mt5.ORDER_TYPE_SELL, lot, price, sl, tp,
-                                        MAGIC, "TC_SELL")
+                            otype = mt5.ORDER_TYPE_SELL
+                            comment = "TC_SELL"
+
+                        sl, tp = calc_sl_tp(SYMBOL, signal, price,
+                                            SL_PIPS, pip_size, TP_RATIO)
+                        if sl == 0.0 or tp == 0.0:
+                            log.warning("SL/TP inválido para %s — ordem cancelada.", SYMBOL)
+                        else:
+                            place_order(SYMBOL, otype, lot, price, sl, tp,
+                                        MAGIC, comment)
                 else:
                     log.debug("Sem sinal — condições Triple Confirmation não atendidas.")
             else:
