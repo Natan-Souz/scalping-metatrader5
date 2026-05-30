@@ -1,42 +1,32 @@
 """
-triple_bot.config
-Todas as constantes de configuração do bot single-pair (GBPUSD).
-Alterar qualquer valor aqui requer aprovação do fluxo Tech Lead → Analista → Dev Senior.
+triple_bot.config — re-exporta de config.py (raiz).
+Para alterar parâmetros, edite config.py.
 """
 
-import MetaTrader5 as mt5
+from config import (
+    # Símbolo e timeframes
+    TRIPLE_SYMBOL        as SYMBOL,
+    TRIPLE_TF_ENTRY      as TF_M5,   # alias interno — atualmente TF_M1
+    TF_H1,
 
-# Símbolo e timeframes
-SYMBOL   = "GBPUSD"
-TF_M5    = mt5.TIMEFRAME_M5
-TF_H1    = mt5.TIMEFRAME_H1
+    # Indicadores
+    EMA_FAST, EMA_SLOW,
+    EMA_TREND_H1         as EMA_TREND,
+    RSI_PERIOD, RSI_BUY_MIN, RSI_BUY_MAX, RSI_SELL_MIN, RSI_SELL_MAX,
+    MACD_FAST, MACD_SLOW, MACD_SIGNAL,
 
-# Indicadores M5
-EMA_FAST     = 9
-EMA_SLOW     = 21
-RSI_PERIOD   = 7
-RSI_BUY_MIN  = 50
-RSI_BUY_MAX  = 70
-RSI_SELL_MIN = 30
-RSI_SELL_MAX = 50
-MACD_FAST    = 12
-MACD_SLOW    = 26
-MACD_SIGNAL  = 9
+    # Candles
+    BARS_ENTRY           as BARS_M5,
+    BARS_H1,
 
-# Filtro de tendência H1
-EMA_TREND = 50
+    # Risco e operacional
+    TRIPLE_RISK_PCT      as RISK_PCT,
+    TRIPLE_SL_PIPS       as SL_PIPS,
+    TP_RATIO,
+    TRIPLE_MAX_POSITIONS as MAX_POSITIONS,
+    LOOP_SECONDS,
 
-# Gestão de risco (Configuração de Referência — não alterar sem aprovação)
-RISK_PCT  = 0.01   # 1% do capital por trade
-SL_PIPS   = 12
-TP_RATIO  = 2.0    # RR 1:2 → TP = 24 pips
-
-# Operacional
-LOOP_SECONDS  = 15
-MAX_POSITIONS = 1
-MAGIC         = 123456
-LOG_FILE      = "triple_confirmation.log"
-
-# Candles para cálculo dos indicadores
-BARS_M5 = 300
-BARS_H1 = 150
+    # Identificação
+    TRIPLE_MAGIC         as MAGIC,
+    TRIPLE_LOG_FILE      as LOG_FILE,
+)

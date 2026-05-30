@@ -7,19 +7,23 @@ automaticamente para os handlers configurados aqui.
 
 import sys
 import logging
+from pathlib import Path
 
 
 def setup_logging(log_file: str) -> None:
     """
     Configura o logger root uma única vez.
     Chamadas subsequentes são ignoradas (handlers já existentes).
+    Cria a pasta do arquivo de log se ela não existir.
 
     Args:
-        log_file: caminho do arquivo .log a ser criado/aberto em modo append.
+        log_file: caminho do arquivo .log (ex: "logs/forex_scanner.log").
     """
     root = logging.getLogger()
     if root.handlers:
         return  # já configurado — evita duplicação em re-imports
+
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     root.setLevel(logging.DEBUG)
     fmt     = logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s", "%Y-%m-%d %H:%M:%S")

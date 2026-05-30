@@ -1,56 +1,38 @@
 """
-scanner_bot.config
-Todas as constantes de configuração do scanner multi-par.
-Alterar qualquer valor aqui requer aprovação do fluxo Tech Lead → Analista → Dev Senior.
+scanner_bot.config — re-exporta de config.py (raiz).
+Para alterar parâmetros, edite config.py.
 """
 
-import MetaTrader5 as mt5
+from config import (
+    # Timeframes
+    TF_M5, TF_H1,
 
-# Timeframes
-TF_M5 = mt5.TIMEFRAME_M5
-TF_H1 = mt5.TIMEFRAME_H1
+    # Indicadores
+    EMA_FAST, EMA_SLOW, EMA_TREND_H1, EMA_CROSSOVER_PIPS_THR,
+    RSI_PERIOD, RSI_BUY_MIN, RSI_BUY_MAX, RSI_SELL_MIN, RSI_SELL_MAX,
+    MACD_FAST, MACD_SLOW, MACD_SIGNAL,
 
-# Filtro de spread por categoria (pips)
-SPREAD_MAX_MAJORS      = 2.5
-SPREAD_MAX_MINORS      = 4.0
-SPREAD_MAX_CRYPTO      = 500.0  # cripto tem spreads muito mais amplos que forex
-SPREAD_MAX_PCT_OF_SL   = 0.20   # spread / SL ≤ 20% (calculado sobre o SL da categoria)
+    # Candles
+    BARS_ENTRY           as BARS_M5,
+    BARS_H1,
 
-# Indicadores M5
-EMA_FAST              = 9
-EMA_SLOW              = 21
-EMA_CROSSOVER_PIPS_THR = 3.0   # threshold de proximidade para pré-crossover
-RSI_PERIOD            = 7
-RSI_BUY_MIN           = 50
-RSI_BUY_MAX           = 70
-RSI_SELL_MIN          = 30
-RSI_SELL_MAX          = 50
-MACD_FAST             = 12
-MACD_SLOW             = 26
-MACD_SIGNAL           = 9
+    # Spread
+    SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_CRYPTO, SPREAD_MAX_PCT_OF_SL,
 
-# Filtro de tendência H1
-EMA_TREND_H1          = 50
+    # Risco e operacional — forex
+    FOREX_RISK_PCT            as RISK_PCT,
+    FOREX_SL_PIPS             as SL_PIPS,
+    CRYPTO_SL_PIPS            as SL_PIPS_CRYPTO,
+    TP_RATIO,
+    FOREX_MAX_TOTAL_POSITIONS as MAX_TOTAL_POSITIONS,
+    FOREX_MAX_POS_PER_SYMBOL  as MAX_POSITIONS_PER_SYMBOL,
+    LOOP_SECONDS,
 
-# Gestão de risco (Configuração de Referência — não alterar sem aprovação)
-RISK_PCT              = 0.025   # 2,5% do capital por trade
-SL_PIPS               = 6       # forex: stop loss em pips
-SL_PIPS_CRYPTO        = 2000    # cripto: ~$200 no BTC (pip ≈ $0.10) — ajuste conforme volatilidade
-TP_RATIO              = 2.0     # RR 1:2 → TP = 2 × SL_PIPS
-# Controle de posições
-MAX_TOTAL_POSITIONS      = 2
-MAX_POSITIONS_PER_SYMBOL = 1
+    # Identificação
+    FOREX_MAGIC               as MAGIC,
+    FOREX_LOG_FILE            as LOG_FILE,
 
-# Operacional
-LOOP_SECONDS          = 15
-MAGIC                 = 654321
-LOG_FILE              = "forex_scanner.log"
-BARS_M5               = 300
-BARS_H1               = 150
-
-# Sessões de mercado (horário UTC — imune a DST do servidor do broker)
-SESSION_LONDON_START  = 7    # abertura Londres
-SESSION_LONDON_END    = 17   # fechamento Londres
-SESSION_NY_START      = 13   # abertura Nova York
-SESSION_NY_END        = 22   # fechamento Nova York
-SESSION_ASIAN_END     = 9    # fechamento Ásia (abre às 22h do dia anterior)
+    # Sessões de mercado
+    SESSION_LONDON_START, SESSION_LONDON_END,
+    SESSION_NY_START, SESSION_NY_END, SESSION_ASIAN_END,
+)
