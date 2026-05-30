@@ -7,20 +7,22 @@ EstadoGerenciandoPosicao → monitora posições; volta ao sinal quando há slot
 
 O import circular (states ↔ robot) é resolvido via TYPE_CHECKING:
 ScannerRobot aparece apenas como type hint e não é importado em runtime.
+
+Ambos os estados recebem e preservam `discover_fn` nas transições,
+permitindo que forex e cripto usem o mesmo código com funções de
+descoberta diferentes.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import MetaTrader5 as mt5
 
 from core.mt5_bridge import calc_lot, place_order
-from scanner_bot.config import (
-    MAX_TOTAL_POSITIONS, TP_RATIO, MAGIC, RISK_PCT,
-)
+from scanner_bot.config import MAX_TOTAL_POSITIONS, TP_RATIO, RISK_PCT
 from scanner_bot.filters import (
     Pipeline,
     FiltroExoticos, FiltroSessao, FiltroSpread,
@@ -28,12 +30,15 @@ from scanner_bot.filters import (
     FiltroCorrelacao, FiltroPosicaoPorSimbolo,
 )
 from scanner_bot.models import CandidatoInfo
-from scanner_bot.symbols import discover_symbols, get_magic_positions
+from scanner_bot.symbols import discover_forex_only_symbols, get_magic_positions
 
 if TYPE_CHECKING:
     from scanner_bot.robot import ScannerRobot
 
 log = logging.getLogger(__name__)
+
+# Tipo para a função de descoberta de símbolos
+DiscoverFn = Callable[[], List[CandidatoInfo]]
 
 
 class EstadoBase(ABC):
@@ -44,28 +49,34 @@ class EstadoBase(ABC):
 
 class EstadoAguardandoSinal(EstadoBase):
     """
-    Varre o mercado, avalia sinais via pipeline e executa entradas.
+    Varre o mercado com a `discover_fn` configurada, avalia sinais
+    via pipeline e executa entradas.
 
     Fase 1 — pipeline estático (uma vez por ciclo):
       FiltroExoticos → FiltroSessao → FiltroSpread
         → FiltroIndicadores → FiltroValidacaoEntrada
 
+      Nota: FiltroSessao já passa símbolos Crypto sem checagem (24/7).
+
     Fase 2 — validação dinâmica (reconstruída após cada entrada):
       FiltroPosicaoPorSimbolo → FiltroCorrelacao
     """
 
+    def __init__(self, discover_fn: Optional[DiscoverFn] = None) -> None:
+        self._discover_fn: DiscoverFn = discover_fn or discover_forex_only_symbols
+
     def processar(self, robo: ScannerRobot) -> EstadoBase:
-        magic_pos = get_magic_positions()
+        magic_pos = get_magic_positions(robo.magic)
 
         if len(magic_pos) >= MAX_TOTAL_POSITIONS:
             log.debug(
                 "Limite global atingido (%d/%d) → gerenciando posições.",
                 len(magic_pos), MAX_TOTAL_POSITIONS,
             )
-            return EstadoGerenciandoPosicao()
+            return EstadoGerenciandoPosicao(self._discover_fn)
 
         # Fase 1: pipeline estático
-        candidatos  = discover_symbols()
+        candidatos  = self._discover_fn()
         static_pipe = Pipeline(
             FiltroExoticos(),
             FiltroSessao(),
@@ -124,17 +135,17 @@ class EstadoAguardandoSinal(EstadoBase):
             )
 
             if place_order(c.symbol, otype, lot, price, sl, tp,
-                           MAGIC, f"SCAN_{c.direction}_{c.symbol}"):
+                           robo.magic, f"SCAN_{c.direction}_{c.symbol}"):
                 entries_done += 1
-                magic_pos = get_magic_positions()
+                magic_pos = get_magic_positions(robo.magic)
 
         log.info(
-            "[SCAN] %d pares | %d passaram filtros | %d entrada(s) executada(s)",
+            "[SCAN] %d símbolos | %d passaram filtros | %d entrada(s) executada(s)",
             len(candidatos), len(aprovados), entries_done,
         )
 
         if len(magic_pos) >= MAX_TOTAL_POSITIONS:
-            return EstadoGerenciandoPosicao()
+            return EstadoGerenciandoPosicao(self._discover_fn)
         return self
 
 
@@ -142,10 +153,14 @@ class EstadoGerenciandoPosicao(EstadoBase):
     """
     Monitora posições abertas e retorna a EstadoAguardandoSinal
     assim que um slot fica disponível.
+    Preserva `discover_fn` para a transição de volta.
     """
 
+    def __init__(self, discover_fn: Optional[DiscoverFn] = None) -> None:
+        self._discover_fn: DiscoverFn = discover_fn or discover_forex_only_symbols
+
     def processar(self, robo: ScannerRobot) -> EstadoBase:
-        magic_pos = get_magic_positions()
+        magic_pos = get_magic_positions(robo.magic)
         log.debug(
             "Posições abertas: %d/%d — aguardando fechamento.",
             len(magic_pos), MAX_TOTAL_POSITIONS,
@@ -156,5 +171,5 @@ class EstadoGerenciandoPosicao(EstadoBase):
                 "Slot disponível (%d/%d) → retornando à busca de sinais.",
                 len(magic_pos), MAX_TOTAL_POSITIONS,
             )
-            return EstadoAguardandoSinal()
+            return EstadoAguardandoSinal(self._discover_fn)
         return self

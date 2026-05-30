@@ -21,9 +21,9 @@ def get_currencies(symbol: str) -> set:
     return {clean[:3].upper(), clean[3:6].upper()}
 
 
-def get_magic_positions() -> list:
-    """Retorna lista de posições abertas com o magic number do scanner."""
-    return [p for p in (mt5.positions_get() or []) if p.magic == MAGIC]
+def get_magic_positions(magic: int) -> list:
+    """Retorna lista de posições abertas para o magic number informado."""
+    return [p for p in (mt5.positions_get() or []) if p.magic == magic]
 
 
 def discover_symbols() -> List[CandidatoInfo]:
@@ -117,5 +117,15 @@ def discover_symbols() -> List[CandidatoInfo]:
     return result
 
 
-# Alias para compatibilidade com código existente
-discover_forex_symbols = discover_symbols
+def discover_forex_only_symbols() -> List[CandidatoInfo]:
+    """Retorna apenas pares forex (Majors, Minors, Exotics) — exclui Crypto."""
+    return [s for s in discover_symbols() if s.category != "Crypto"]
+
+
+def discover_crypto_symbols() -> List[CandidatoInfo]:
+    """Retorna apenas pares cripto."""
+    return [s for s in discover_symbols() if s.category == "Crypto"]
+
+
+# Alias para compatibilidade com código legado
+discover_forex_symbols = discover_forex_only_symbols

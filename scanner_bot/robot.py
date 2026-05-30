@@ -1,15 +1,21 @@
 """
 scanner_bot.robot
-Robô scanner multi-par — gerencia o loop de 15s e delega ao estado atual.
+Robô scanner genérico — gerencia o loop de 15s e delega ao estado atual.
 
-Execução:
+Pode operar em modo forex ou cripto conforme os parâmetros recebidos.
+
+Execução direta (forex):
     python forex_scanner.py
     python -m scanner_bot.robot
+
+Execução cripto (via crypto_scanner.py):
+    python crypto_scanner.py
 """
 
 import sys
 import time
 import logging
+from typing import Callable, List, Optional
 
 from core.logging_setup import setup_logging
 from core.mt5_bridge import connect
@@ -21,28 +27,46 @@ from scanner_bot.config import (
     EMA_FAST, EMA_SLOW, RSI_PERIOD,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL, EMA_TREND_H1,
 )
+from scanner_bot.models import CandidatoInfo
 from scanner_bot.states import EstadoAguardandoSinal, EstadoBase
+from scanner_bot.symbols import discover_forex_only_symbols
 
 log = logging.getLogger(__name__)
 
+DiscoverFn = Callable[[], List[CandidatoInfo]]
+
 
 class ScannerRobot:
-    """Gerencia o loop de 15s e delega toda a lógica ao estado atual."""
+    """
+    Gerencia o loop de 15s e delega toda a lógica ao estado atual.
 
-    def __init__(self, capital: float) -> None:
-        self.capital         = capital
-        self._estado: EstadoBase = EstadoAguardandoSinal()
+    Args:
+        capital:     capital em USD para cálculo de lote
+        magic:       magic number das ordens (padrão: MAGIC do scanner forex)
+        discover_fn: função que retorna os símbolos a varrer
+                     (padrão: discover_forex_only_symbols)
+        log_file:    arquivo de log (padrão: LOG_FILE do scanner forex)
+    """
+
+    def __init__(
+        self,
+        capital: float,
+        magic: int = MAGIC,
+        discover_fn: Optional[DiscoverFn] = None,
+        log_file: str = LOG_FILE,
+    ) -> None:
+        self.capital      = capital
+        self.magic        = magic
+        self._log_file    = log_file
+        self._discover_fn = discover_fn or discover_forex_only_symbols
+        self._estado: EstadoBase = EstadoAguardandoSinal(self._discover_fn)
 
     def run(self) -> None:
         log.info("=" * 70)
-        log.info("Forex Scanner Multi-Par iniciando | Capital=%.2f USD", self.capital)
+        log.info("Scanner iniciando | Capital=%.2f USD | Magic=%d", self.capital, self.magic)
         log.info(
-            "Risco=%.0f%% | SL=%d pips | TP=%d pips | Max posições=%d | Magic=%d",
-            RISK_PCT * 100, SL_PIPS, int(SL_PIPS * TP_RATIO), MAX_TOTAL_POSITIONS, MAGIC,
-        )
-        log.info(
-            "Spread: Majors≤%.1fp | Minors≤%.1fp | Exotics=bloqueado | spread/SL≤%.0f%%",
-            SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS, SPREAD_MAX_PCT_OF_SL * 100,
+            "Risco=%.0f%% | SL=%d pips | TP=%d pips | Max posições=%d",
+            RISK_PCT * 100, SL_PIPS, int(SL_PIPS * TP_RATIO), MAX_TOTAL_POSITIONS,
         )
         log.info("=" * 70)
 
@@ -69,7 +93,7 @@ class ScannerRobot:
 
 
 def main() -> None:
-    """Entry point com input de capital e inicialização do logging."""
+    """Entry point do scanner FOREX (forex_scanner.py)."""
     print("=" * 70)
     print("  Forex Scanner Multi-Par — Triple Confirmation | MT5")
     print("=" * 70)
@@ -99,7 +123,12 @@ def main() -> None:
     print(f"  Score mínimo entrada: 4/4 (Triple Confirmation completa)")
     print()
 
-    ScannerRobot(capital_usd).run()
+    ScannerRobot(
+        capital=capital_usd,
+        magic=MAGIC,
+        discover_fn=discover_forex_only_symbols,
+        log_file=LOG_FILE,
+    ).run()
 
 
 if __name__ == "__main__":
