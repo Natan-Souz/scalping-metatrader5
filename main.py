@@ -15,7 +15,7 @@ from config import (
     TRIPLE_LOG_FILE, LOOP_SECONDS,
     FOREX_MAGIC, FOREX_LOG_FILE, FOREX_RISK_PCT, FOREX_SL_PIPS,
     FOREX_MAX_TOTAL_POSITIONS, SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS,
-    CRYPTO_MAGIC, CRYPTO_LOG_FILE, CRYPTO_RISK_PCT, CRYPTO_SL_PIPS,
+    CRYPTO_MAGIC, CRYPTO_LOG_FILE, CRYPTO_RISK_PCT, CRYPTO_SL_PCT,
     CRYPTO_MAX_TOTAL_POSITIONS, SPREAD_MAX_CRYPTO,
     EMA_FAST, EMA_SLOW, RSI_PERIOD, MACD_FAST, MACD_SLOW, MACD_SIGNAL, EMA_TREND_H1,
 )
@@ -90,7 +90,7 @@ def _run_crypto(capital: float) -> None:
           f"MACD ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}) + EMA {EMA_TREND_H1} H1")
     print(f"  Spread max : {SPREAD_MAX_CRYPTO:.0f} pips | Sessão: 24/7 (sem filtro)")
     print(f"  Risco      : {CRYPTO_RISK_PCT*100:.0f}% | "
-          f"SL={CRYPTO_SL_PIPS}p | TP={int(CRYPTO_SL_PIPS*TP_RATIO)}p")
+          f"SL={CRYPTO_SL_PCT*100:.0f}% do preço | TP={CRYPTO_SL_PCT*TP_RATIO*100:.0f}%")
     print(f"  Posições   : máx {CRYPTO_MAX_TOTAL_POSITIONS} | Loop: {LOOP_SECONDS}s | Magic: {CRYPTO_MAGIC}")
     print(f"  Capital    : USD {capital:,.2f} | Risco/trade: USD {capital*CRYPTO_RISK_PCT:,.2f}")
     print("=" * 65 + "\n")
