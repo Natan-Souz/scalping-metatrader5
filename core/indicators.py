@@ -1,7 +1,7 @@
 """
 core.indicators
 Funções de cálculo de indicadores técnicos — puro numpy, sem TA-Lib.
-Compartilhado por triple_bot e scanner_bot.
+Compartilhado por todos os módulos do projeto.
 """
 
 from typing import Tuple

@@ -1,137 +1,194 @@
 """
-main.py — Inicializador Principal
-===================================
-Ponto de entrada único para todos os bots do projeto.
-Todos os parâmetros são configurados em config.py.
+main.py — Ponto de entrada unificado do Scalping Bot MT5.
 
-Execução:
-    python main.py
+Modos de uso:
+    python main.py                           Scanner completo (todos os pares forex)
+    python main.py --symbols EURUSD GBPUSD   Scanner com pares específicos (mesmo terminal)
+    python main.py --launch EURUSD GBPUSD    Abre terminal PowerShell separado por par
+    python main.py --worker EURUSD           Worker individual (usado pelo launcher)
+    python main.py --worker EURUSD --capital 10000  Worker sem prompt de capital
+
+Personalização por símbolo: edite profiles.py.
+MetaTrader5 deve estar aberto e logado antes de iniciar.
 """
 
+import argparse
+import subprocess
 import sys
-from config import (
-    TRIPLE_SYMBOL, TRIPLE_TF_ENTRY, TRIPLE_MAGIC,
-    TRIPLE_RISK_PCT, TRIPLE_SL_PIPS, TP_RATIO, TRIPLE_MAX_POSITIONS,
-    TRIPLE_LOG_FILE, LOOP_SECONDS,
-    FOREX_MAGIC, FOREX_LOG_FILE, FOREX_RISK_PCT, FOREX_SL_PIPS,
-    FOREX_MAX_TOTAL_POSITIONS, SPREAD_MAX_MAJORS, SPREAD_MAX_MINORS,
-    CRYPTO_MAGIC, CRYPTO_LOG_FILE, CRYPTO_RISK_PCT, CRYPTO_SL_PCT,
-    CRYPTO_MAX_TOTAL_POSITIONS, SPREAD_MAX_CRYPTO,
-    EMA_FAST, EMA_SLOW, RSI_PERIOD, MACD_FAST, MACD_SLOW, MACD_SIGNAL, EMA_TREND_H1,
-)
+from pathlib import Path
+from typing import List, Optional
 
-# Mapa de timeframe → nome legível
-_TF_NAMES = {1: "M1", 5: "M5", 15: "M15", 30: "M30", 16385: "M5", 16388: "H1"}
+import config as cfg
 
 
-def _tf_name(tf: int) -> str:
-    return _TF_NAMES.get(tf, str(tf))
-
-
-def _ask_capital() -> float:
+def _prompt_capital() -> float:
     while True:
         try:
-            raw     = input("\n  Capital base em USD: ").strip().replace(",", ".")
+            raw = input("\nCapital base em USD: ").strip().replace(",", ".")
             capital = float(raw)
             if capital <= 0:
-                raise ValueError
+                raise ValueError("Capital deve ser positivo.")
             return capital
-        except ValueError:
-            print("  Valor inválido. Digite um número positivo.")
+        except ValueError as exc:
+            print(f"  Entrada inválida: {exc}. Tente novamente.")
 
 
-def _header(title: str) -> None:
-    print("\n" + "=" * 65)
-    print(f"  {title}")
-    print("=" * 65)
+def _print_banner(mode: str, symbols: Optional[List[str]] = None) -> None:
+    print("=" * 70)
+    print(f"  Scalping Bot MT5 — Triple Confirmation | {mode}")
+    print("=" * 70)
+    print(
+        f"  Estratégia : EMA {cfg.EMA_FAST}/{cfg.EMA_SLOW} M5 + RSI {cfg.RSI_PERIOD} + "
+        f"MACD ({cfg.MACD_FAST},{cfg.MACD_SLOW},{cfg.MACD_SIGNAL}) + EMA {cfg.EMA_TREND_H1} H1"
+    )
+    if symbols:
+        print(f"  Símbolos   : {', '.join(symbols)}")
+    else:
+        print("  Símbolos   : todos os pares forex")
+    print(
+        f"  Risco      : {cfg.FOREX_RISK_PCT * 100:.1f}% | "
+        f"SL={cfg.FOREX_SL_PIPS}p | TP={int(cfg.FOREX_SL_PIPS * cfg.TP_RATIO)}p"
+    )
+    print(f"  Loop       : {cfg.LOOP_SECONDS}s | MaxPos: {cfg.FOREX_MAX_TOTAL_POSITIONS}")
+    print("=" * 70)
 
 
-# ──────────────────────────────────────────────────────────────────
-# LANÇADORES POR BOT
-# ──────────────────────────────────────────────────────────────────
-def _run_triple(capital: float) -> None:
-    _header(f"Triple Confirmation — {TRIPLE_SYMBOL}")
-    print(f"  Timeframe  : {_tf_name(TRIPLE_TF_ENTRY)} (entrada) + H1 (tendência)")
-    print(f"  Estratégia : EMA {EMA_FAST}/{EMA_SLOW} + RSI {RSI_PERIOD} + "
-          f"MACD ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}) + EMA {EMA_TREND_H1} H1")
-    print(f"  Risco      : {TRIPLE_RISK_PCT*100:.0f}% | "
-          f"SL={TRIPLE_SL_PIPS}p | TP={int(TRIPLE_SL_PIPS*TP_RATIO)}p")
-    print(f"  Posições   : máx {TRIPLE_MAX_POSITIONS} | Loop: {LOOP_SECONDS}s | Magic: {TRIPLE_MAGIC}")
-    print(f"  Capital    : USD {capital:,.2f} | Risco/trade: USD {capital*TRIPLE_RISK_PCT:,.2f}")
-    print("=" * 65 + "\n")
-
+def run_scanner(capital: float, symbols: Optional[List[str]] = None) -> None:
+    """Roda o scanner no processo atual (todos os pares ou selecionados)."""
     from core.logging_setup import setup_logging
-    from triple_bot.bot import run
-    setup_logging(TRIPLE_LOG_FILE)
-    run(capital)
+    from bot.robot import ScannerRobot
+    from bot.symbols import discover_forex_only_symbols
+
+    setup_logging(cfg.FOREX_LOG_FILE)
+
+    if symbols:
+        sym_set     = set(symbols)
+        discover_fn = lambda: discover_forex_only_symbols(filter_symbols=sym_set)
+    else:
+        discover_fn = discover_forex_only_symbols
+
+    print(f"\n  Capital confirmado  : USD {capital:,.2f}")
+    print(f"  Risco por trade     : USD {capital * cfg.FOREX_RISK_PCT:,.2f}")
+    print(f"  Score mín entrada   : 4/4 (Triple Confirmation completa)\n")
+
+    ScannerRobot(
+        capital=capital,
+        magic=cfg.FOREX_MAGIC,
+        discover_fn=discover_fn,
+        max_positions=cfg.FOREX_MAX_TOTAL_POSITIONS,
+    ).run()
 
 
-def _run_forex(capital: float) -> None:
-    _header("Forex Scanner Multi-Par")
-    print(f"  Estratégia : EMA {EMA_FAST}/{EMA_SLOW} M5 + RSI {RSI_PERIOD} + "
-          f"MACD ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}) + EMA {EMA_TREND_H1} H1")
-    print(f"  Spread     : Majors≤{SPREAD_MAX_MAJORS}p | Minors≤{SPREAD_MAX_MINORS}p | Exotics=bloqueado")
-    print(f"  Risco      : {FOREX_RISK_PCT*100:.0f}% | "
-          f"SL={FOREX_SL_PIPS}p | TP={int(FOREX_SL_PIPS*TP_RATIO)}p")
-    print(f"  Posições   : máx {FOREX_MAX_TOTAL_POSITIONS} | Loop: {LOOP_SECONDS}s | Magic: {FOREX_MAGIC}")
-    print(f"  Capital    : USD {capital:,.2f} | Risco/trade: USD {capital*FOREX_RISK_PCT:,.2f}")
-    print("=" * 65 + "\n")
-
+def run_worker(symbol: str, capital: float) -> None:
+    """Roda um único símbolo com perfil próprio (magic único, max_positions=1)."""
     from core.logging_setup import setup_logging
-    from scanner_bot.robot import ScannerRobot
-    from scanner_bot.symbols import discover_forex_only_symbols
-    setup_logging(FOREX_LOG_FILE)
-    ScannerRobot(capital, FOREX_MAGIC, discover_forex_only_symbols, FOREX_LOG_FILE).run()
+    from bot.robot import ScannerRobot
+    from bot.symbols import discover_forex_only_symbols, symbol_to_magic
+    from profiles import get_profile
+
+    profile  = get_profile(symbol)
+    magic    = profile.magic if profile.magic is not None else symbol_to_magic(symbol)
+    log_file = f"logs/worker_{symbol}.log"
+
+    setup_logging(log_file)
+
+    sym_set     = {symbol}
+    discover_fn = lambda: discover_forex_only_symbols(filter_symbols=sym_set)
+
+    _print_banner(f"Worker [{symbol}]", [symbol])
+    print(f"  Magic      : {magic}")
+    print(f"  Score mín  : {profile.score_min}/4")
+    print(f"  SL/TP      : {profile.sl_pips}p / {int(profile.sl_pips * cfg.TP_RATIO)}p")
+    print(f"  Risco      : {profile.risk_pct * 100:.1f}%")
+    print(f"  Log        : {log_file}")
+    print("=" * 70)
+    print(f"\n  Capital confirmado  : USD {capital:,.2f}")
+    print(f"  Risco por trade     : USD {capital * profile.risk_pct:,.2f}\n")
+
+    ScannerRobot(
+        capital=capital,
+        magic=magic,
+        discover_fn=discover_fn,
+        max_positions=1,
+    ).run()
 
 
-def _run_crypto(capital: float) -> None:
-    _header("Crypto Scanner")
-    print(f"  Estratégia : EMA {EMA_FAST}/{EMA_SLOW} M5 + RSI {RSI_PERIOD} + "
-          f"MACD ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}) + EMA {EMA_TREND_H1} H1")
-    print(f"  Spread max : {SPREAD_MAX_CRYPTO:.0f} pips | Sessão: 24/7 (sem filtro)")
-    print(f"  Risco      : {CRYPTO_RISK_PCT*100:.0f}% | "
-          f"SL={CRYPTO_SL_PCT*100:.0f}% do preço | TP={CRYPTO_SL_PCT*TP_RATIO*100:.0f}%")
-    print(f"  Posições   : máx {CRYPTO_MAX_TOTAL_POSITIONS} | Loop: {LOOP_SECONDS}s | Magic: {CRYPTO_MAGIC}")
-    print(f"  Capital    : USD {capital:,.2f} | Risco/trade: USD {capital*CRYPTO_RISK_PCT:,.2f}")
-    print("=" * 65 + "\n")
+def launch_terminals(symbols: List[str], capital: float) -> None:
+    """Abre um terminal PowerShell separado para cada símbolo."""
+    python = sys.executable
+    script = str(Path(__file__).resolve())
 
-    from core.logging_setup import setup_logging
-    from scanner_bot.robot import ScannerRobot
-    from scanner_bot.symbols import discover_crypto_symbols
-    setup_logging(CRYPTO_LOG_FILE)
-    ScannerRobot(capital, CRYPTO_MAGIC, discover_crypto_symbols, CRYPTO_LOG_FILE).run()
+    print(f"\n  Abrindo {len(symbols)} terminal(is)...")
+    for sym in symbols:
+        cmd = f'& "{python}" "{script}" --worker {sym} --capital {capital}'
+        opened = False
 
+        # Tenta Windows Terminal primeiro (disponível no Windows 11)
+        try:
+            subprocess.Popen(
+                ["wt.exe", "new-tab", "--title", sym, "--",
+                 "powershell", "-NoExit", "-Command", cmd],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            opened = True
+        except (FileNotFoundError, OSError):
+            pass
 
-# ──────────────────────────────────────────────────────────────────
-# MENU PRINCIPAL
-# ──────────────────────────────────────────────────────────────────
-_BOTS = {
-    "1": ("Triple Confirmation",  f"par único ({TRIPLE_SYMBOL})",   _run_triple),
-    "2": ("Forex Scanner",        "todos os pares forex",            _run_forex),
-    "3": ("Crypto Scanner",       "todos os pares cripto",           _run_crypto),
-}
+        if not opened:
+            subprocess.Popen(
+                ["powershell.exe", "-NoExit", "-Command", cmd],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+
+        print(f"  OK Terminal aberto: {sym}")
+
+    print(f"\n  {len(symbols)} worker(s) iniciado(s).")
+    print("  Este processo pode ser encerrado (os workers continuam rodando).\n")
 
 
 def main() -> None:
-    print("\n" + "=" * 65)
-    print("  Scalping MT5 — Triple Confirmation")
-    print("  Configuração: config.py")
-    print("=" * 65)
-    print("\n  Bots disponíveis:\n")
-    for key, (name, desc, _) in _BOTS.items():
-        print(f"    [{key}]  {name:<25}  {desc}")
-    print()
+    parser = argparse.ArgumentParser(
+        description="Scalping Bot MT5 — Triple Confirmation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+exemplos:
+  python main.py
+  python main.py --symbols EURUSD GBPUSD
+  python main.py --launch EURUSD GBPUSD
+        """,
+    )
+    parser.add_argument(
+        "--symbols", nargs="+", metavar="SYM",
+        help="Pares específicos para o scanner (mesmo terminal)",
+    )
+    parser.add_argument(
+        "--launch", nargs="+", metavar="SYM",
+        help="Abre um terminal PowerShell por símbolo",
+    )
+    parser.add_argument(
+        "--worker", metavar="SYM",
+        help="Modo worker — chamado pelo launcher",
+    )
+    parser.add_argument(
+        "--capital", type=float, metavar="USD",
+        help="Capital em USD (evita prompt interativo no modo worker)",
+    )
+    args = parser.parse_args()
 
-    while True:
-        choice = input("  Escolha (1/2/3): ").strip()
-        if choice in _BOTS:
-            break
-        print("  Opção inválida. Digite 1, 2 ou 3.")
+    if args.worker:
+        capital = args.capital if args.capital else _prompt_capital()
+        run_worker(args.worker, capital)
 
-    capital = _ask_capital()
+    elif args.launch:
+        _print_banner("Launcher", args.launch)
+        capital = _prompt_capital()
+        launch_terminals(args.launch, capital)
 
-    _, _, launcher = _BOTS[choice]
-    launcher(capital)
+    else:
+        mode = "Scanner Seletivo" if args.symbols else "Scanner Completo"
+        _print_banner(mode, args.symbols)
+        capital = _prompt_capital()
+        run_scanner(capital, symbols=args.symbols)
 
 
 if __name__ == "__main__":

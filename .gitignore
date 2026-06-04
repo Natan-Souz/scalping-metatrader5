@@ -7,6 +7,7 @@ symbols_map.json
 
 # Pastas internas do agente / IDE
 .claude/
+memory/
 
 # Python
 __pycache__/

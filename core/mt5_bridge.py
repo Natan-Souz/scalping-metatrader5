@@ -1,7 +1,7 @@
 """
 core.mt5_bridge
 Funções de baixo nível para comunicação com MetaTrader5.
-Compartilhado por triple_bot e scanner_bot.
+Compartilhado por todos os módulos do projeto.
 
 Todas as funções que dependem de constantes de configuração (MAGIC, RISK_PCT,
 SL_PIPS) recebem esses valores como parâmetros explícitos — este módulo não
