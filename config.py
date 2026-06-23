@@ -35,6 +35,19 @@ BARS_ENTRY = 300   # candles no timeframe de entrada (M5)
 BARS_H1    = 150   # candles H1 para o filtro de tendência
 
 # ──────────────────────────────────────────────────────────────────
+# FILTRO DE CICLO DE MERCADO (Regime / ADX)
+# ──────────────────────────────────────────────────────────────────
+# Porteira de regime: só opera quando há tendência CLARA (alta ou baixa).
+# Medido por ADX no H1 — o ciclo é um conceito de timeframe maior; ADX no
+# M5 é ruidoso demais. A Triple Confirmation decide a direção; o ADX só
+# decide se existe ciclo digno de ser operado.
+REGIME_FILTER_ENABLED = True     # liga/desliga globalmente o FiltroRegime
+REGIME_TF             = TF_H1    # timeframe do ciclo (TF_H1 recomendado)
+REGIME_BARS           = 150      # candles para o cálculo de ADX no REGIME_TF
+ADX_PERIOD            = 14       # período de Wilder do ADX
+ADX_MIN_TREND         = 25       # ADX >= 25 = tendência clara; < 20 = lateral
+
+# ──────────────────────────────────────────────────────────────────
 # OPERACIONAL  (compartilhado)
 # ──────────────────────────────────────────────────────────────────
 TP_RATIO     = 2.0   # RR 1:2  →  TP = SL × TP_RATIO

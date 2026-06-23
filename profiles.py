@@ -29,11 +29,33 @@ DEFAULT_PROFILE = SymbolProfile(
     magic=None,  # None = gerado automaticamente por símbolo no modo worker
 )
 
+# Perfil de SCALPING recomendado para validar UM ativo com filtro de ciclo.
+#
+# Lógica: com o FiltroRegime (ADX H1 >= 25) cortando os trades de
+# lateralização, a rejeição de ruído deixa de ser trabalho do score. Por
+# isso score_min=3 passa a ser viável E mais seguro — captura mais do leg
+# de tendência sem o whipsaw que o score_min=4 tentava evitar de forma crua.
+# risk_pct reduzido a 1% enquanto o ativo ainda está em validação.
+SCALPING_REGIME_PROFILE = SymbolProfile(
+    score_min=3,            # regime já filtra o ruído → 3 captura mais da tendência
+    sl_pips=3,              # scalping curto (mantido)
+    risk_pct=0.01,          # 1% por trade durante a validação do ativo
+    ema_fast=9,
+    ema_slow=21,
+    rsi_period=7,
+    ema_crossover_thr=1.5,
+    use_regime_filter=True,
+    adx_period=14,
+    adx_min=25.0,           # tendência clara; suba p/ 30 se quiser ainda mais seletivo
+)
+
 # Adicione entradas para personalizar por símbolo.
 # Parâmetros omitidos herdam os valores de DEFAULT_PROFILE.
+# Para usar o perfil recomendado, aponte o seu ativo para SCALPING_REGIME_PROFILE:
+#     "USDJPY": SCALPING_REGIME_PROFILE,
 SYMBOL_PROFILES: dict[str, SymbolProfile] = {
-    # "EURUSD": SymbolProfile(score_min=3, risk_pct=0.03),
-    # "GBPUSD": SymbolProfile(sl_pips=5, risk_pct=0.015),
+    # "USDJPY": SCALPING_REGIME_PROFILE,
+    # "EURUSD": SymbolProfile(score_min=3, risk_pct=0.01, adx_min=25.0),
 }
 
 

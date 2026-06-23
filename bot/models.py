@@ -25,6 +25,10 @@ class SymbolProfile:
     rsi_period:        int           = 7
     ema_crossover_thr: float         = 1.5     # pips para pré-crossover
     magic:             Optional[int] = None    # None → auto-gerado por símbolo
+    # Filtro de ciclo de mercado (regime) — ver bot.filters.FiltroRegime
+    use_regime_filter: bool          = True    # exige tendência clara (ADX) para operar
+    adx_period:        int           = 14      # período do ADX no timeframe do ciclo
+    adx_min:           float         = 25.0    # ADX mínimo p/ considerar ciclo "claro"
 
 
 @dataclass
@@ -44,6 +48,7 @@ class CandidatoInfo:
     profile:     SymbolProfile   = field(default_factory=SymbolProfile)
     sl_pct:      Optional[float] = None   # cripto: SL como % do preço
     spread_pips: float           = 0.0
+    adx:         float           = 0.0   # força de tendência no timeframe do ciclo
     score:       int             = 0
     direction:   str             = "NEUTRAL"
     criterios:   Dict[str, str]  = field(default_factory=dict)

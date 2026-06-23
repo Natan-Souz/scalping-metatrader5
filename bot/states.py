@@ -21,7 +21,7 @@ import config as cfg
 from core.mt5_bridge import calc_lot, calc_sl_tp, place_order
 from bot.filters import (
     Pipeline,
-    FiltroExoticos, FiltroSessao, FiltroSpread,
+    FiltroExoticos, FiltroSessao, FiltroSpread, FiltroRegime,
     FiltroIndicadores, FiltroValidacaoEntrada,
     FiltroCorrelacao, FiltroPosicaoPorSimbolo,
 )
@@ -49,7 +49,7 @@ class EstadoAguardandoSinal(EstadoBase):
 
     Fase 1 — pipeline estático (uma vez por ciclo):
       FiltroExoticos → FiltroSessao → FiltroSpread
-        → FiltroIndicadores → FiltroValidacaoEntrada
+        → FiltroRegime → FiltroIndicadores → FiltroValidacaoEntrada
 
     Fase 2 — validação dinâmica (reconstruída após cada entrada):
       FiltroPosicaoPorSimbolo → FiltroCorrelacao
@@ -79,6 +79,7 @@ class EstadoAguardandoSinal(EstadoBase):
             FiltroExoticos(),
             FiltroSessao(),
             FiltroSpread(),
+            FiltroRegime(),
             FiltroIndicadores(),
             FiltroValidacaoEntrada(),
         )
@@ -134,9 +135,9 @@ class EstadoAguardandoSinal(EstadoBase):
                 continue
 
             log.info(
-                "CANDIDATO score=%d | %s %s | lote=%.2f | spread=%.2fp"
+                "CANDIDATO score=%d | %s %s | lote=%.2f | spread=%.2fp | ADX=%.1f"
                 " | c1=%s c2=%s c3=%s c4=%s",
-                c.score, c.symbol, c.direction, lot, c.spread_pips,
+                c.score, c.symbol, c.direction, lot, c.spread_pips, c.adx,
                 c.criterios["c1"], c.criterios["c2"],
                 c.criterios["c3"], c.criterios["c4"],
             )

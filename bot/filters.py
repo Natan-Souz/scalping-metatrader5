@@ -4,7 +4,7 @@ Pipeline Chain of Responsibility — filtros do scanner.
 
 Ordem de execução no pipeline estático (mais barato ao mais caro):
   FiltroExoticos → FiltroSessao → FiltroSpread
-    → FiltroIndicadores → FiltroValidacaoEntrada
+    → FiltroRegime → FiltroIndicadores → FiltroValidacaoEntrada
 
 Filtros dinâmicos (reconstruídos a cada entrada no mesmo ciclo):
   FiltroPosicaoPorSimbolo → FiltroCorrelacao
@@ -19,7 +19,7 @@ import numpy as np
 import MetaTrader5 as mt5
 
 import config as cfg
-from core.indicators import calc_ema, calc_rsi, calc_macd
+from core.indicators import calc_ema, calc_rsi, calc_macd, calc_adx
 from core.mt5_bridge import get_bars
 from bot.models import CandidatoInfo
 from bot.symbols import get_currencies
@@ -136,6 +136,55 @@ class FiltroSpread(FiltroBase):
             return None
 
         c.spread_pips = round(spread_pips, 2)
+        return c
+
+
+# ──────────────────────────────────────────────────────────────
+# FILTRO DE CICLO DE MERCADO (Regime / ADX)
+# ──────────────────────────────────────────────────────────────
+class FiltroRegime(FiltroBase):
+    """
+    Porteira de ciclo de mercado: só deixa passar quando há tendência CLARA.
+
+    Mede a força da tendência via ADX no timeframe do ciclo (cfg.REGIME_TF,
+    H1 por padrão). ADX é direcionalmente neutro — não diz alta ou baixa,
+    apenas se existe um ciclo digno de ser operado. A direção continua sendo
+    decidida pela Triple Confirmation (FiltroIndicadores).
+
+      ADX >= profile.adx_min  → tendência clara  → passa
+      ADX <  profile.adx_min  → lateral/ruído    → bloqueia (sem scalp)
+
+    Roda ANTES do FiltroIndicadores: se o regime é lateral, nem calculamos
+    os 4 critérios. Respeita o switch global cfg.REGIME_FILTER_ENABLED e o
+    flag por perfil profile.use_regime_filter (cripto opera 24/7, mas o
+    regime se aplica normalmente).
+    """
+
+    def executar(self, c: CandidatoInfo) -> Optional[CandidatoInfo]:
+        p = c.profile
+        if not cfg.REGIME_FILTER_ENABLED or not p.use_regime_filter:
+            return c
+
+        df = get_bars(c.symbol, cfg.REGIME_TF, cfg.REGIME_BARS)
+        if df is None:
+            return None
+
+        adx_arr, _, _ = calc_adx(
+            df["high"].values, df["low"].values, df["close"].values, p.adx_period
+        )
+        adx_val = adx_arr[-1]
+        if np.isnan(adx_val):
+            log.debug("%s: ADX NaN (warmup insuficiente) — ignorado.", c.symbol)
+            return None
+
+        c.adx = round(float(adx_val), 1)
+        if adx_val < p.adx_min:
+            log.debug("SKIP regime %s: ADX %.1f < %.1f (lateral)",
+                      c.symbol, adx_val, p.adx_min)
+            return None
+
+        log.debug("%s: regime OK | ADX %.1f >= %.1f (tendência clara)",
+                  c.symbol, adx_val, p.adx_min)
         return c
 
 
