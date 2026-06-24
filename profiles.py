@@ -35,27 +35,54 @@ DEFAULT_PROFILE = SymbolProfile(
 # lateralização, a rejeição de ruído deixa de ser trabalho do score. Por
 # isso score_min=3 passa a ser viável E mais seguro — captura mais do leg
 # de tendência sem o whipsaw que o score_min=4 tentava evitar de forma crua.
-# risk_pct reduzido a 1% enquanto o ativo ainda está em validação.
-SCALPING_REGIME_PROFILE = SymbolProfile(
+# risk_pct reduzido a 1% enquanto o ativo ainda está em validação
+
+SCALPING_REGIME_PROFILE_USDJPY = SymbolProfile(
     score_min=3,            # regime já filtra o ruído → 3 captura mais da tendência
     sl_pips=3,              # scalping curto (mantido)
     risk_pct=0.01,          # 1% por trade durante a validação do ativo
     ema_fast=9,
     ema_slow=21,
     rsi_period=7,
-    ema_crossover_thr=1.5,
+    ema_crossover_thr=7.5,
+    use_regime_filter=True,
+    adx_period=14,
+    adx_min=25.0,           # tendência clara; suba p/ 30 se quiser ainda mais seletivo
+)
+SCALPING_REGIME_PROFILE_EURUSD = SymbolProfile(
+    score_min=3,            # regime já filtra o ruído → 3 captura mais da tendência
+    sl_pips=3,              # scalping curto (mantido)
+    risk_pct=0.01,          # 1% por trade durante a validação do ativo
+    ema_fast=9,
+    ema_slow=21,
+    rsi_period=7,
+    ema_crossover_thr=5.4,
     use_regime_filter=True,
     adx_period=14,
     adx_min=25.0,           # tendência clara; suba p/ 30 se quiser ainda mais seletivo
 )
 
+SCALPING_REGIME_PROFILE_GBPJPY = SymbolProfile(
+    score_min=3,            # regime já filtra o ruído → 3 captura mais da tendência
+    sl_pips=3,              # ⚠️ provável estreito demais p/ a volatilidade do GBPJPY — ver nota
+    risk_pct=0.01,          # 1% por trade durante a validação do ativo
+    ema_fast=9,
+    ema_slow=21,
+    rsi_period=7,
+    ema_crossover_thr=19.0, # 0,10% @ ~190 — "the beast" precisa de threshold mais largo
+    use_regime_filter=True,
+    adx_period=14,
+    adx_min=25.0,           # tendência clara; suba p/ 30 se quiser ainda mais seletivo
+)
+
+
 # Adicione entradas para personalizar por símbolo.
 # Parâmetros omitidos herdam os valores de DEFAULT_PROFILE.
-# Para usar o perfil recomendado, aponte o seu ativo para SCALPING_REGIME_PROFILE:
-#     "USDJPY": SCALPING_REGIME_PROFILE,
+# Cada ativo usa seu perfil de scalping calibrado (ema_crossover_thr por % do preço).
 SYMBOL_PROFILES: dict[str, SymbolProfile] = {
-    # "USDJPY": SCALPING_REGIME_PROFILE,
-    # "EURUSD": SymbolProfile(score_min=3, risk_pct=0.01, adx_min=25.0),
+    "USDJPY": SCALPING_REGIME_PROFILE_USDJPY,
+    "EURUSD": SCALPING_REGIME_PROFILE_EURUSD,
+    #"GBPJPY": SCALPING_REGIME_PROFILE_GBPJPY,
 }
 
 
